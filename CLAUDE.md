@@ -34,7 +34,10 @@ Fantasy basketball command center for Andrew's Sleeper league (BFBA, league id `
 - **Lock value** (`lockValue`): avg + 0.85 × sd, roughly the best of ~3.5 games. Used for waivers, trades, power rankings.
 - **Dynasty value** (`dv`, 0–100): percentile among all rostered players, 55% age-adjusted lock value (steep age curve, `ageMult`) and 45% Sleeper dynasty ADP. Used in the Dynasty tab, trades, waivers, My Team.
 - **Draft picks** (`pickValue`): on the same 0–100 scale. Next year's picks scale with how weak the original team's roster looks now; later years are flat and discounted 10% a year. Pick ownership comes from `/league/{id}/traded_picks` (`lib/build.js` → `futurePicks`).
-- **Trade verdict**: 60% dynasty value change, 40% this-season change (weekly lineup total and rest-of-season points), each squashed with tanh so neither side dominates.
+- **Trades** (`evalSide`, `tradeIdeas`): each side is judged on its weekly lineup change (`tanh(dL/5)`) and its trade-value change (`tanh(dDyn/25)`). Trade value `tv()` is dynasty value on a convex scale (^2.5) so stars beat two mid players with the same total. Receiving more players than you send forces a cut of your lowest-value player, which counts against you.
+  - Other teams' weighting comes from `teamMode`: contender (60% now), middle (40%), rebuilding (25%), by roster strength plus standings (standings count more as weeks pass). Andrew sets his own approach with chips (Win now 65% / Balanced 45% / Build for the future 25%), saved in localStorage.
+  - `acceptChance`: logistic on the other team's score; an even trade is ~35%. Suggestions need a gain for Andrew and ≥45% odds. The search covers 1-for-1, 2-for-1, 1-for-2, and adding a 2nd/3rd-round pick as a sweetener. It takes ~1.5s, so it runs after first paint and is memoized per data load (`MEMO`).
+- **Waiver moves** (`waiverMoves`): every free agent vs every unlocked active player. Win-now = best lineup +1 or more without losing >10 dynasty value. Future = +10 dynasty value without losing >4 lock value. Also suggests swapping taxi stashes for better rookies on waivers.
 - **My Team** (`viewTeam`): starters as set in Sleeper, bench, IR (flags players healthy enough that Sleeper will force a move), taxi (flags rookies clearly better than your weakest bench player).
 
 ## Working on it

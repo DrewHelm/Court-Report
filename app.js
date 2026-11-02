@@ -3,7 +3,10 @@
 // the game you lock (before his next game starts, while he's in your lineup),
 // otherwise his last game of the week. Locked players can't move slots.
 
-let D = null, P = {}, TEAMS = {};
+let D = null, P = {}, TEAMS = {}, MEMO = {};
+// Per-load cache for expensive calculations (cleared whenever new data arrives)
+function memo(k, f) { return k in MEMO ? MEMO[k] : (MEMO[k] = f()); }
+function baseLineup(rid) { return memo("bl" + rid, () => typicalLineup(active(TEAMS[rid]))); }
 const st = { day: null, wPos: "ALL", wSort: "score", partner: null, give: new Set(), get: new Set(), kScope: "mine" };
 
 const OUT = new Set(["Out", "IR", "Suspended", "Sus", "NA", "DNR", "COV"]);
@@ -315,21 +318,75 @@ function lockValue(id) { const p = P[id]; return (p.val || 0) + 0.85 * (p.sd || 
 function weekEV(id) { const p = P[id]; return continuation(futureGames(p)) ?? 0; }
 
 function waiverScore(id) { const p = P[id]; const base = 0.5 * lockValue(id) + 0.3 * weekEV(id) + 0.2 * (p.l14 ?? p.val ?? 0); return OUT.has(p.inj) ? base * 0.4 : base; }
+// Concrete add/drop moves, judged for this season and for the long run
+function waiverMoves() {
+  return memo("waivers", () => {
+    const me = TEAMS[D.me]; const act = active(me); const before = baseLineup(D.me);
+    const drops = act.filter(id => !lockState(D.me, id).locked);
+    const fas = D.fa.filter(id => P[id] && !OUT.has(P[id].inj));
+    const cands = [];
+    for (const f of fas) for (const d of drops) {
+      const sGain = lockValue(f) - lockValue(d), dGain = dv(f) - dv(d);
+      const now = sGain >= 2 && dGain >= -10, fut = dGain >= 10 && sGain >= -4;
+      if (!now && !fut) continue;
+      cands.push({ f, d, sGain, dGain, now, fut });
+    }
+    for (const c of cands) c.lineup = typicalLineup(act.filter(x => x !== c.d).concat(c.f)) - before;
+    const pickBest = (list, key, n = 3) => { const out = [], uf = new Set(), ud = new Set(); for (const c of list.sort((a, b) => key(b) - key(a))) { if (uf.has(c.f) || ud.has(c.d)) continue; out.push(c); uf.add(c.f); ud.add(c.d); if (out.length >= n) break; } return out; };
+    const nowList = pickBest(cands.filter(c => c.now && c.lineup >= 1), c => c.lineup + 0.05 * Math.max(0, c.dGain));
+    const futList = pickBest(cands.filter(c => c.fut), c => c.dGain + 0.5 * Math.max(0, c.sGain));
+    // Taxi: a rookie on waivers who's a better stash than one of yours
+    const taxiOk = id => P[id].exp === 0 || D.league.taxiVets;
+    const taxiMoves = [];
+    for (const t of (me.taxi || []).filter(id => P[id])) {
+      const best = fas.filter(f => taxiOk(f) && dv(f) - dv(t) >= 8 && !taxiMoves.find(x => x.f === f)).sort((a, b) => dv(b) - dv(a))[0];
+      if (best) taxiMoves.push({ f: best, d: t, dGain: dv(best) - dv(t) });
+    }
+    return { nowList, futList, taxiMoves: taxiMoves.slice(0, 2) };
+  });
+}
+function moveCard(c, kind) {
+  const f = P[c.f], d = P[c.d]; const both = c.fut && c.lineup != null && c.lineup >= 1;
+  const lines = [];
+  if (c.lineup != null) lines.push(`This season: ${c.lineup >= 0.5 ? `your best lineup gets <b>${f1(c.lineup)}</b> better each week` : c.sGain >= 0 ? `better depth (${f1(lockValue(c.f))} vs ${f1(lockValue(c.d))} lock value), though he wouldn't crack your best lineup yet` : `a small step back now (${f1(lockValue(c.f))} vs ${f1(lockValue(c.d))} lock value)`}`);
+  lines.push(`Dynasty: ${dv(c.f)} vs ${dv(c.d)} (<span class="${c.dGain >= 0 ? "up" : "down"}">${c.dGain >= 0 ? "+" : ""}${c.dGain}</span>)${f.age != null && d.age != null ? ` · age ${f.age} vs ${d.age}` : ""}`);
+  const gl = futureGames(f).length; if (kind !== "taxi") lines.push(`${gl} game${gl === 1 ? "" : "s"} left this week${f.inj ? ` · listed ${esc(f.inj)}` : ""}`);
+  return `<article class="lock ${both ? "v-lock" : ""}">
+    <div class="top"><div class="pl"><span class="a">Pick up ${esc(f.n)}${statusTags(f)}</span><span class="b">${esc(f.t)} · ${esc(f.pos.join("/"))}</span></div>${both ? `<span class="tag t-lock">BOTH</span>` : ""}</div>
+    <div class="pl"><span class="a muted">${kind === "taxi" ? "Cut from taxi" : "Drop"} ${esc(d.n)}</span><span class="b">${esc(d.t || "")} · ${esc(d.pos.join("/"))}</span></div>
+    <div class="why">${lines.join("<br>")}</div></article>`;
+}
 function viewWaivers() {
   const me = TEAMS[D.me]; const mine = active(me);
+  const mv = waiverMoves();
+  const shown = new Set(); const key = c => c.f + ">" + c.d;
+  const nowCards = mv.nowList.map(c => { shown.add(key(c)); return moveCard(c, "now"); }).join("");
+  const futCards = mv.futList.filter(c => !shown.has(key(c))).map(c => moveCard(c, "fut")).join("");
+  const taxiCards = mv.taxiMoves.map(c => moveCard(c, "taxi")).join("");
   const drop = mine.map(id => ({ id, v: lockValue(id) })).sort((a, b) => a.v - b.v)[0];
+  const bestFA = D.fa.filter(id => P[id] && !OUT.has(P[id].inj)).sort((a, b) => lockValue(b) - lockValue(a))[0];
+  const none = !nowCards && !futCards && !taxiCards;
+  const recs = none
+    ? `<div class="note info">No pickups worth making right now. Your weakest player${drop ? `, ${esc(P[drop.id].n)} (${f1(drop.v)} lock value, ${dv(drop.id)} dynasty)` : ""}, is about as good as anyone available${bestFA ? `; the best free agent is ${esc(P[bestFA].n)} at ${f1(lockValue(bestFA))}` : ""}.</div>`
+    : `${nowCards ? `<h3 style="margin:4px 0 8px">Win now</h3><div class="locks">${nowCards}</div>` : `<div class="note info">No pickup would improve your lineup this season by a point or more.</div>`}
+       ${futCards ? `<h3 style="margin:16px 0 8px">Build for the future</h3><div class="locks">${futCards}</div>` : ""}
+       ${taxiCards ? `<h3 style="margin:16px 0 8px">Taxi squad upgrades</h3><div class="locks">${taxiCards}</div>` : ""}`;
+
   const pos = st.wPos; let list = D.fa.filter(id => P[id] && (pos === "ALL" || P[id].pos.includes(pos)));
-  const key = { score: waiverScore, dyn: dv, lv: lockValue, val: id => P[id].val || 0, wk: weekEV, l14: id => P[id].l14 ?? -1, trend: id => (P[id].l14 ?? P[id].val ?? 0) - (P[id].pre || P[id].val || 0) }[st.wSort] || waiverScore;
-  list = list.map(id => ({ id, k: key(id) })).sort((a, b) => b.k - a.k).slice(0, 40);
+  const sortKey = { score: waiverScore, dyn: dv, lv: lockValue, val: id => P[id].val || 0, wk: weekEV, trend: id => (P[id].l14 ?? P[id].val ?? 0) - (P[id].pre || P[id].val || 0) }[st.wSort] || waiverScore;
+  list = list.map(id => ({ id, k: sortKey(id) })).sort((a, b) => b.k - a.k).slice(0, 40);
   const th = (k, l, cls = "") => `<th class="n sort ${st.wSort === k ? "act" : ""} ${cls}" data-sort="${k}">${l}</th>`;
-  const rows = list.map((x, i) => { const p = P[x.id]; const tr = (p.l14 ?? p.val ?? 0) - (p.pre || p.val || 0); const up = lockValue(x.id) - (drop ? drop.v : 0);
-    return `<tr><td class="n muted">${i + 1}</td><td>${plCell(x.id, null, null)}</td><td class="n score">${f1(waiverScore(x.id))}</td><td class="n">${f1(lockValue(x.id))}</td><td class="n hide-s">${f1(p.val)}</td><td class="n">${f1(weekEV(x.id))}</td><td class="n">${futureGames(p).length}</td><td class="n hide-s ${tr > 1 ? "up" : tr < -1 ? "down" : ""}">${tr > 0 ? "▲" : tr < 0 ? "▼" : ""}${f1(Math.abs(tr))}</td><td class="n">${dv(x.id)}</td><td class="n ${up > 0 ? "up" : "down"}">${up > 0 ? "+" : ""}${f1(up)}</td></tr>`; }).join("");
+  const rows = list.map((x, i) => { const p = P[x.id]; const tr = (p.l14 ?? p.val ?? 0) - (p.pre || p.val || 0);
+    return `<tr><td class="n muted">${i + 1}</td><td>${plCell(x.id, null, null)}</td><td class="n score">${f1(waiverScore(x.id))}</td><td class="n">${f1(lockValue(x.id))}</td><td class="n">${f1(weekEV(x.id))}</td><td class="n hide-s">${futureGames(p).length}</td><td class="n hide-s ${tr > 1 ? "up" : tr < -1 ? "down" : ""}">${tr > 0 ? "▲" : tr < 0 ? "▼" : ""}${f1(Math.abs(tr))}</td><td class="n">${dv(x.id)}</td><td class="n hide-s">${p.age ?? "—"}</td></tr>`; }).join("");
   const chips = ["ALL", "PG", "SG", "SF", "PF", "C"].map(x => `<button class="chip ${x === pos ? "on" : ""}" data-pos="${x}" type="button">${x === "ALL" ? "All" : x}</button>`).join("");
   return `
-  <section class="panel"><div class="hd"><h2>Waiver Wire</h2><span class="r">${D.fa.length} free agents · FAAB $${D.league.faab ?? "—"}</span></div><div class="chips">${chips}</div></section>
-  ${drop ? `<div class="note info">Your weakest active player is <b>${esc(P[drop.id].n)}</b> (lock value ${f1(drop.v)}). The last column shows how much each free agent beats him by.</div>` : ""}
-  <section class="panel"><div class="tbl"><table><thead><tr><th class="n">#</th><th>Player</th>${th("score", "Score")}${th("lv", "Lock val")}${th("val", "Avg val", "hide-s")}${th("wk", "This wk")}<th class="n">Gms</th>${th("trend", "Trend", "hide-s")}${th("dyn", "Dyn")}<th class="n">vs drop</th></tr></thead><tbody>${rows || `<tr><td colspan="10" class="empty">No free agents at this position.</td></tr>`}</tbody></table></div>
-  <p class="muted small" style="margin:10px 0 0">Lock val = what he's worth in a typical Lock-In week: his average plus credit for big games, since you only count his best one. This wk = what he'd likely count for this week if you added him now. Score mixes lock value (50%), this week (30%) and last 14 days (20%). Dyn = dynasty value (0–100, same scale as rostered players); sort by it to find long-term stashes.</p></section>`;
+  <section class="panel"><div class="hd"><h2>Waiver Moves</h2><span class="r">FAAB $${D.league.faab ?? "—"} · ${D.fa.length} free agents checked</span></div>
+    <p class="muted small" style="margin:0 0 12px">Every free agent is checked against every player on your active roster. Win-now moves have to make your best lineup at least a point better per week without giving up much dynasty value. Future moves have to add at least 10 dynasty value without hurting this season much. BOTH means it does both.</p>
+    ${recs}</section>
+  <details class="panel"><summary><b>All free agents</b></summary>
+    <div class="chips" style="margin:10px 0">${chips}</div>
+    <div class="tbl"><table><thead><tr><th class="n">#</th><th>Player</th>${th("score", "Score")}${th("lv", "Lock val")}${th("wk", "This wk")}<th class="n hide-s">Gms</th>${th("trend", "Trend", "hide-s")}${th("dyn", "Dyn")}<th class="n hide-s">Age</th></tr></thead><tbody>${rows || `<tr><td colspan="9" class="empty">No free agents at this position.</td></tr>`}</tbody></table></div>
+    <p class="muted small" style="margin:10px 0 0">Lock val = worth in a typical Lock-In week (average plus credit for big games). This wk = what he'd likely count for this week. Dyn = dynasty value, 0–100.</p></details>`;
 }
 
 // ---------- dynasty values (league is dynasty: settings.type 2) ----------
@@ -357,75 +414,179 @@ function pickValue(pk) {
 function pickLabel(pk) { const t = TEAMS[pk.orig]; return `${pk.season} ${["", "1st", "2nd", "3rd"][pk.round] || pk.round + "th"}${pk.orig !== pk.owner ? ` (from ${t ? t.name : "?"})` : ""}`; }
 const pickKey = pk => `pk:${pk.season}:${pk.round}:${pk.orig}`;
 function picksOf(rid) { return (D.picks || []).filter(pk => pk.owner === rid); }
+// Trade value: stars are worth far more than two mid players with the same total, so trades use a convex scale
+function tv(v) { return 100 * Math.pow(Math.max(0, v) / 100, 2.5); }
 function assetValue(key) { if (key.startsWith("pk:")) { const pk = D.picks.find(x => pickKey(x) === key); return pk ? pickValue(pk) : 0; } return dv(key); }
 
 // ---------- trades ----------
 // Rest of season: one counted game per week, so weeks left × lock value
 function rosValue(id) { const p = P[id]; return lockValue(id) * ((p.rem || 0) / 3.5) * (OUT.has(p.inj) ? 0.5 : 1); }
-function typicalLineup(ids) { return optimize(ids, id => (OUT.has(P[id].inj) ? null : lockValue(id))).total; }
+// Best 9 lock values. Only the top 13 players (plus the top 2 centers) can matter, which keeps trade searches fast.
+function typicalLineup(ids) {
+  const ok = ids.filter(id => !OUT.has(P[id].inj)).sort((a, b) => lockValue(b) - lockValue(a));
+  const keep = new Set(ok.slice(0, 13)); ok.filter(id => P[id].pos.includes("C")).slice(0, 2).forEach(id => keep.add(id));
+  return optimize([...keep], lockValue).total;
+}
 const GROUPS = { G: ["PG", "SG"], F: ["SF", "PF"], C: ["C"] };
 function groupStrength(rid) { const ids = active(TEAMS[rid]).filter(id => !OUT.has(P[id].inj)); const out = {}; for (const [g, ps] of Object.entries(GROUPS)) { out[g] = sum(ids.filter(id => P[id].pos.some(x => ps.includes(x))).map(lockValue).sort((a, b) => b - a).slice(0, g === "C" ? 2 : 4)); } return out; }
+// How each team is positioned decides how it weighs this season against the future
+function teamMode(rid) {
+  return memo("modes", () => {
+    const s = Object.fromEntries(D.teams.map(t => [t.rid, baseLineup(t.rid)]));
+    const stand = [...D.teams].sort((a, b) => b.w - a.w || b.pf - a.pf).map(t => t.rid);
+    // Early in the season the standings say little, so roster strength carries most of the weight
+    const ws = Math.min(0.4, 0.05 * D.history.length);
+    const score = Object.fromEntries(D.teams.map(t => [t.rid, (1 - ws) * (1 + D.teams.filter(x => s[x.rid] > s[t.rid]).length) + ws * (stand.indexOf(t.rid) + 1)]));
+    const order = D.teams.map(t => t.rid).sort((a, b) => score[a] - score[b]); const n = order.length; const res = {};
+    order.forEach((rid, i) => { const mode = i < Math.round(n / 3) ? "contender" : i >= n - Math.round(n / 3) ? "rebuilding" : "middle"; res[rid] = { mode, w: mode === "contender" ? 0.6 : mode === "rebuilding" ? 0.25 : 0.4 }; });
+    return res;
+  })[rid];
+}
+const modeName = m => (m === "contender" ? "like a contender" : m === "rebuilding" ? "like a rebuilding team" : "like a middle-of-the-pack team");
+// Your own approach is your call, not a guess: saved in this browser
+const APPROACH = { now: { w: 0.65, label: "Win now" }, bal: { w: 0.45, label: "Balanced" }, future: { w: 0.25, label: "Build for the future" } };
+function myApproach() { try { const v = localStorage.getItem("cr-approach"); return APPROACH[v] ? v : "bal"; } catch { return "bal"; } }
+function setApproach(v) { try { localStorage.setItem("cr-approach", v); } catch {} delete MEMO.ideas; }
+const plOnly = a => a.filter(k => !String(k).startsWith("pk:"));
+// One team's view of a trade: lineup change, rest-of-season change, dynasty change (including who they'd have to cut)
+function evalSide(rid, give, get) {
+  const t = TEAMS[rid]; const giveSet = new Set(give);
+  const after = typicalLineup(active(t).filter(id => !giveSet.has(id)).concat(plOnly(get).filter(id => !OUT.has(P[id].inj) || true)));
+  const dL = after - baseLineup(rid);
+  // Rest of season = the lineup change for every week left (extra bench depth that never starts adds nothing)
+  const dRos = dL * weeksLeft();
+  let dDyn = sum(get.map(k => tv(assetValue(k)))) - sum(give.map(k => tv(assetValue(k))));
+  const extra = plOnly(get).length - plOnly(give).length; let cut = [];
+  if (extra > 0) {
+    cut = t.players.filter(id => P[id] && !giveSet.has(id) && !(t.taxi || []).includes(id) && !(t.reserve || []).includes(id)).sort((a, b) => dv(a) - dv(b)).slice(0, extra);
+    dDyn -= sum(cut.map(id => tv(dv(id))));
+  }
+  const m = rid === D.me ? { mode: myApproach(), w: APPROACH[myApproach()].w } : teamMode(rid);
+  const nowS = Math.tanh(dL / 5), dynS = Math.tanh(dDyn / 25);
+  return { dL, dRos, dDyn, nowS, dynS, score: m.w * nowS + (1 - m.w) * dynS, mode: m.mode, w: m.w, cut };
+}
+// Rough odds the other manager says yes: people want to feel they won, so an even trade lands around 35%
+function acceptChance(their) { return 1 / (1 + Math.exp(-(8 * their.score - 0.6))); }
+function weeksLeft() { return memo("weeksLeft", () => { const r = Object.values(P).filter(p => p.own && p.rem).map(p => p.rem); return r.length ? sum(r) / r.length / 3.5 : 0; }); }
+function chanceLabel(p) { return p >= 0.6 ? ["Likely", "up"] : p >= 0.35 ? ["Possible", ""] : p >= 0.15 ? ["Long shot", "down"] : ["Very unlikely", "down"]; }
+function myVerdict(s) { return s > 0.35 ? ["Strong win", "up"] : s > 0.1 ? ["Good for you", "up"] : s > -0.1 ? ["About even", ""] : s > -0.35 ? ["Bad for you", "down"] : ["Bad deal", "down"]; }
+function assetName(k) { if (String(k).startsWith("pk:")) { const pk = D.picks.find(x => pickKey(x) === k); return pk ? pickLabel(pk) + " pick" : "a pick"; } return P[k]?.n || "?"; }
+
+// Trades to propose: 1-for-1, 2-for-1 (consolidate) and 1-for-2 (add depth), plus a pick sweetener when it tips a deal
+function tradeIdeas() {
+  return memo("ideas", () => {
+    const me = TEAMS[D.me]; const ideas = [];
+    const myPool = me.players.filter(id => P[id] && !(me.reserve || []).includes(id));
+    const myPicks = picksOf(D.me).sort((a, b) => pickValue(a) - pickValue(b)).filter(pk => pk.round >= 2).slice(0, 3);
+    const consider = (rid, give, get, sweeten) => {
+      const mine = evalSide(D.me, give, get); if (mine.score < 0.12) return;
+      const theirs = evalSide(rid, get, give); const p = acceptChance(theirs);
+      if (p >= 0.45) { ideas.push({ rid, give, get, mine, theirs, p, ev: mine.score * p }); return; }
+      if (!sweeten || p < 0.2) return;
+      for (const pk of myPicks) {
+        const g2 = give.concat(pickKey(pk)); const m2 = evalSide(D.me, g2, get); if (m2.score < 0.1) break;
+        const t2 = evalSide(rid, get, g2); const p2 = acceptChance(t2);
+        if (p2 >= 0.45) { ideas.push({ rid, give: g2, get, mine: m2, theirs: t2, p: p2, ev: m2.score * p2 }); return; }
+      }
+    };
+    for (const t of D.teams) {
+      if (t.rid === D.me) continue;
+      const pool = t.players.filter(id => P[id] && !(t.reserve || []).includes(id));
+      for (const g of myPool) for (const r of pool) if (Math.abs(dv(g) - dv(r)) <= 25) consider(t.rid, [g], [r], true);
+      const theirTop = [...pool].sort((a, b) => dv(b) - dv(a)).slice(0, 6), myMid = [...myPool].sort((a, b) => dv(b) - dv(a)).slice(0, 14);
+      for (let i = 0; i < myMid.length; i++) for (let j = i + 1; j < myMid.length; j++) for (const r of theirTop) {
+        const a = myMid[i], b = myMid[j], tot = dv(a) + dv(b);
+        if (dv(r) < Math.max(dv(a), dv(b)) || tot < dv(r) - 10 || tot > dv(r) + 45) continue;
+        consider(t.rid, [a, b], [r], false);
+      }
+      const theirMid = [...pool].sort((a, b) => dv(b) - dv(a)).slice(0, 10), myTop = [...myPool].sort((a, b) => dv(b) - dv(a)).slice(0, 8);
+      for (const g of myTop) for (let i = 0; i < theirMid.length; i++) for (let j = i + 1; j < theirMid.length; j++) {
+        const a = theirMid[i], b = theirMid[j], tot = dv(a) + dv(b);
+        if (dv(g) < Math.max(dv(a), dv(b)) || tot < dv(g) - 10 || tot > dv(g) + 45) continue;
+        consider(t.rid, [g], [a, b], false);
+      }
+    }
+    ideas.sort((a, b) => b.ev - a.ev);
+    const out = [], usedGet = new Set(), usedGive = {}, perTeam = {};
+    for (const x of ideas) {
+      if (x.get.some(id => usedGet.has(id))) continue;
+      if ((perTeam[x.rid] || 0) >= 2) continue;
+      if (plOnly(x.give).some(id => (usedGive[id] || 0) >= 2)) continue;
+      out.push(x); x.get.forEach(id => usedGet.add(id)); plOnly(x.give).forEach(id => (usedGive[id] = (usedGive[id] || 0) + 1)); perTeam[x.rid] = (perTeam[x.rid] || 0) + 1;
+      if (out.length >= 6) break;
+    }
+    return out;
+  });
+}
+function sideText(e, who) {
+  const bits = [];
+  if (Math.abs(e.dL) >= 0.5) bits.push(`${who === "you" ? "your" : "their"} weekly lineup ${e.dL > 0 ? "+" : ""}${f1(e.dL)}`);
+  bits.push(`trade value ${e.dDyn >= 0 ? "+" : ""}${f0(e.dDyn)}`);
+  if (e.cut.length) bits.push(`${who === "you" ? "you'd" : "they'd"} have to cut ${e.cut.map(id => P[id].n).join(", ")}`);
+  return bits.join(" · ");
+}
+function whyTheyAccept(x) {
+  const t = TEAMS[x.rid], th = x.theirs, r = [`${esc(t.name)} looks ${modeName(th.mode)}`];
+  if (th.mode === "contender" && th.dL > 0.5) r.push("and gets stronger right now");
+  else if (th.mode === "rebuilding" && th.dDyn > 0) r.push("and gets younger or adds future value");
+  else if (th.dL > 0.5 && th.dDyn > 0) r.push("and comes out ahead both now and long term");
+  else if (th.dL > 0.5) r.push(`and their lineup improves by ${f1(th.dL)} a week`);
+  else if (th.dDyn > 0) r.push(`and gains ${f0(th.dDyn)} dynasty value`);
+  return r.join(" ") + ".";
+}
 function viewTrade() {
   const others = D.teams.filter(t => t.rid !== D.me); if (!st.partner) st.partner = others[0].rid;
-  const me = TEAMS[D.me], them = TEAMS[st.partner];
+  const me = TEAMS[D.me], them = TEAMS[st.partner]; const ap = myApproach();
+  const apChips = Object.entries(APPROACH).map(([k, v]) => `<button class="chip ${k === ap ? "on" : ""}" data-approach="${k}" type="button">${v.label}</button>`).join("");
+  // ---- suggestions (the search takes a moment, so paint the page first) ----
+  const ready = "ideas" in MEMO;
+  if (!ready) setTimeout(() => { tradeIdeas(); if (currentView() === "trade") render(); }, 30);
+  const ideas = ready ? tradeIdeas() : [];
+  const ideaCards = ideas.map((x, i) => { const t = TEAMS[x.rid]; const [cl, cc] = chanceLabel(x.p); const [vl] = myVerdict(x.mine.score);
+    return `<article class="lock v-lock">
+      <div class="top"><div class="pl"><span class="a">Get ${x.get.map(k => esc(assetName(k))).join(" + ")}</span><span class="b">from ${esc(t.name)} · ${esc(t.user)}</span></div><span class="tag ${cc === "up" ? "t-lock" : cc === "down" ? "t-out" : "t-q"}">${cl} ${pct(x.p)}</span></div>
+      <div class="pl"><span class="a muted">Give ${x.give.map(k => esc(assetName(k))).join(" + ")}</span></div>
+      <div class="why"><b>For you (${vl.toLowerCase()}):</b> ${esc(sideText(x.mine, "you"))}<br><b>Why they'd say yes:</b> ${whyTheyAccept(x)} (${esc(sideText(x.theirs, "them"))})</div>
+      <div class="foot"><span></span><button class="btn" type="button" data-idea="${i}">Open in analyzer</button></div></article>`; }).join("");
+
+  // ---- analyzer ----
   const pick = (team, set, key) => {
     const ids = [...new Set(team.players)].filter(id => P[id]).sort((a, b) => dv(b) - dv(a));
     const players = ids.map(id => `<label class="pick"><input type="checkbox" data-${key}="${id}" ${set.has(id) ? "checked" : ""}>${plCell(id, team, null, (team.taxi || []).includes(id) ? `<span class="tag t-b2b">TAXI</span>` : (team.reserve || []).includes(id) ? `<span class="tag t-b2b">IR</span>` : "")}<span class="num small" title="Lock value · dynasty value">${f1(lockValue(id))} · <b>${dv(id)}</b></span></label>`).join("");
     const pks = picksOf(team.rid).map(pk => `<label class="pick"><input type="checkbox" data-${key}="${pickKey(pk)}" ${set.has(pickKey(pk)) ? "checked" : ""}><div class="pl"><span class="a">${esc(pickLabel(pk))}</span><span class="b">Rookie draft pick</span></div><span class="num small"><b>${pickValue(pk)}</b></span></label>`).join("");
-    return players + (pks ? `<details style="margin-top:8px"><summary>Draft picks (${picksOf(team.rid).length})</summary>${pks}</details>` : "");
+    return players + (pks ? `<details style="margin-top:8px"${[...set].some(k => k.startsWith("pk:")) ? " open" : ""}><summary>Draft picks (${picksOf(team.rid).length})</summary>${pks}</details>` : "");
   };
   const give = [...st.give], get = [...st.get];
-  const plOnly = a => a.filter(k => !k.startsWith("pk:"));
-  let result = `<div class="empty">Pick players or draft picks on both sides to compare.</div>`;
+  let result = `<div class="empty">Got an offer? Check the players and picks on each side to see how it grades for you and how likely they are to accept.</div>`;
   if (give.length || get.length) {
-    const ros = a => sum(plOnly(a).map(rosValue)), dyn = a => sum(a.map(assetValue)), lv = a => sum(plOnly(a).map(lockValue));
-    const myIds = active(me), thIds = active(them);
-    const myAfter = myIds.filter(id => !st.give.has(id)).concat(plOnly(get)), thAfter = thIds.filter(id => !st.get.has(id)).concat(plOnly(give));
-    const myB = typicalLineup(myIds), myA = typicalLineup(myAfter), thB = typicalLineup(thIds), thA = typicalLineup(thAfter);
-    const dRos = ros(get) - ros(give), dDyn = dyn(get) - dyn(give), dL = myA - myB;
-    // Dynasty league: long-term value carries the most weight
-    // Squash each side so one huge number can't drown out the other
-    const nowScore = Math.tanh((dL / 6 + dRos / 150) / 2), dynScore = Math.tanh(dDyn / 40);
-    const score = 0.4 * nowScore + 0.6 * dynScore;
-    const verdict = score > 0.5 ? ["Strong win", "up"] : score > 0.12 ? ["Lean accept", "up"] : score > -0.12 ? ["Even swap", ""] : score > -0.5 ? ["Lean decline", "down"] : ["Hard pass", "down"];
-    const lean = nowScore > 0.1 && dynScore < -0.1 ? "Helps you now, costs you long term." : nowScore < -0.1 && dynScore > 0.1 ? "Costs you this season, builds for the future." : "";
-    const row = (k, a, b, d) => `<tr><td>${k}</td><td class="n">${a}</td><td class="n">${b}</td><td class="n ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "+" : ""}${f1(d)}</td></tr>`;
-    result = `<div class="bar-lg" style="justify-content:space-between;flex-wrap:wrap;margin-bottom:6px"><span class="verdict ${verdict[1]}">${verdict[0]}</span><span class="muted small">for ${esc(me.name)}</span></div>
+    const mine = evalSide(D.me, give, get), theirs = evalSide(them.rid, get, give);
+    const [vl, vc] = myVerdict(mine.score); const p = acceptChance(theirs); const [cl, cc] = chanceLabel(p);
+    const lean = mine.nowS > 0.1 && mine.dynS < -0.1 ? "Helps you this season, costs you long term." : mine.nowS < -0.1 && mine.dynS > 0.1 ? "Costs you this season, builds for the future." : "";
+    const row = (k, a, b, d, fmt = f1) => `<tr><td>${k}</td><td class="n">${a}</td><td class="n">${b}</td><td class="n ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "+" : ""}${fmt(d)}</td></tr>`;
+    const lv = a => sum(plOnly(a).map(lockValue)), dyn = a => sum(a.map(k => tv(assetValue(k))));
+    result = `<div class="cmp" style="grid-template-columns:1fr 1fr;margin-bottom:10px">
+        <div><span class="k">For you</span><span class="verdict ${vc}">${vl}</span></div>
+        <div><span class="k">Will ${esc(them.name)} accept?</span><span class="verdict ${cc}">${cl} · ${pct(p)}</span></div></div>
       ${lean ? `<div class="note info" style="margin-bottom:10px">${lean}</div>` : ""}
       <div class="tbl"><table><thead><tr><th></th><th class="n">You give</th><th class="n">You get</th><th class="n">Net</th></tr></thead><tbody>
-      ${row("Dynasty value (players + picks)", f0(dyn(give)), f0(dyn(get)), dDyn)}
+      ${row("Trade value (players + picks)", f0(dyn(give)), f0(dyn(get)), dyn(get) - dyn(give), f0)}
       ${row("Lock value per week", f1(lv(give)), f1(lv(get)), lv(get) - lv(give))}
-      ${row("Rest of this season", f0(ros(give)), f0(ros(get)), dRos)}
       </tbody></table></div>
-      <div class="summary" style="margin-top:12px"><div><span class="k">Your weekly total</span><span class="v">${f1(myB)} → ${f1(myA)}</span><span class="small ${dL >= 0 ? "up" : "down"}">${dL >= 0 ? "+" : ""}${f1(dL)}</span></div><div><span class="k">Their weekly total</span><span class="v">${f1(thB)} → ${f1(thA)}</span><span class="small ${thA - thB >= 0 ? "up" : "down"}">${thA - thB >= 0 ? "+" : ""}${f1(thA - thB)}</span></div></div>
-      <p class="muted small" style="margin:10px 0 0">The verdict weighs dynasty value 60% and this season 40%. Dynasty value is 0–100 per player or pick. Weekly total = each team's best 9 lock values, so a 2-for-1 that clogs your bench shows up here. Pick values are estimates: next year's 1sts are worth more from teams that look weak now.</p>`;
+      <div class="summary" style="margin-top:12px"><div><span class="k">Rest of season for you</span><span class="v ${mine.dRos >= 0 ? "good" : ""}">${mine.dRos >= 0 ? "+" : ""}${f0(mine.dRos)}</span><span class="small muted">points over ~${f0(weeksLeft())} weeks</span></div><div><span class="k">Your weekly lineup</span><span class="v">${f1(baseLineup(D.me))} → ${f1(baseLineup(D.me) + mine.dL)}</span><span class="small ${mine.dL >= 0 ? "up" : "down"}">${mine.dL >= 0 ? "+" : ""}${f1(mine.dL)}</span></div><div><span class="k">Their weekly lineup</span><span class="v">${f1(baseLineup(them.rid))} → ${f1(baseLineup(them.rid) + theirs.dL)}</span><span class="small ${theirs.dL >= 0 ? "up" : "down"}">${theirs.dL >= 0 ? "+" : ""}${f1(theirs.dL)}</span></div></div>
+      <p class="muted small" style="margin:10px 0 0"><b>Their side:</b> ${esc(them.name)} looks ${modeName(theirs.mode)}, so they weigh this season ${pct(theirs.w)} and the future ${pct(1 - theirs.w)}. For them: ${esc(sideText(theirs, "them"))}.${mine.cut.length ? ` You'd need to cut ${esc(mine.cut.map(id => P[id].n).join(", "))} to make room.` : ""}</p>`;
   }
-  const strength = {}; D.teams.forEach(t => (strength[t.rid] = groupStrength(t.rid)));
-  const rank = (g, rid) => 1 + D.teams.filter(t => strength[t.rid][g] > strength[rid][g]).length;
-  const myRanks = Object.fromEntries(Object.keys(GROUPS).map(g => [g, rank(g, D.me)])); const weak = Object.entries(myRanks).sort((a, b) => b[1] - a[1])[0][0];
-  const startOf = ids => new Set(optimize(ids, id => (OUT.has(P[id].inj) ? null : lockValue(id))).lineup.map(x => x.id));
-  const myStart = startOf(active(me));
-  const myWorst = Math.min(...active(me).filter(id => myStart.has(id) && P[id].pos.some(x => GROUPS[weak].includes(x))).map(lockValue), 99);
-  const ideas = [];
-  others.forEach(t => { const ids = active(t); const start = startOf(ids);
-    ids.filter(id => !start.has(id) && !OUT.has(P[id].inj) && P[id].pos.some(x => GROUPS[weak].includes(x)) && lockValue(id) > myWorst).forEach(id => ideas.push({ id, t }));
-    if (rank(weak, t.rid) <= 3) ids.filter(id => start.has(id) && P[id].pos.some(x => GROUPS[weak].includes(x))).sort((a, b) => lockValue(a) - lockValue(b)).slice(0, 1).forEach(id => { if (lockValue(id) > myWorst && !ideas.find(x => x.id === id)) ideas.push({ id, t }); });
-  });
-  ideas.sort((a, b) => lockValue(b.id) - lockValue(a.id));
-  const heat = D.teams.map(t => `<tr${t.rid === D.me ? ' class="swapin"' : ""}><td><div class="pl"><span class="a">${esc(t.name)}</span><span class="b">${esc(t.user)}</span></div></td>${Object.keys(GROUPS).map(g => { const r = rank(g, t.rid); const bg = r <= 4 ? "var(--good-bg)" : r >= 9 ? "var(--bad-bg)" : "transparent"; return `<td class="h" style="background:${bg}">${r}</td>`; }).join("")}</tr>`).join("");
   const opts = others.map(t => `<option value="${t.rid}" ${t.rid === st.partner ? "selected" : ""}>${esc(t.name)} (${esc(t.user)})</option>`).join("");
   return `
-  <section class="panel"><div class="hd"><h2>Trade Analyzer</h2><span class="r">Numbers: lock value · <b>dynasty value</b></span></div><label class="small muted" for="partner">Trade partner</label><br><select class="sel" id="partner">${opts}</select></section>
+  <section class="panel"><div class="hd"><h2>Trades to Propose</h2><span class="r">Your approach: this season ${pct(APPROACH[ap].w)}, future ${pct(1 - APPROACH[ap].w)}</span></div>
+    <div class="chips" style="margin-bottom:12px">${apChips}</div>
+    <p class="muted small" style="margin:0 0 12px">Each idea has to make your team better and give the other manager a real reason to accept, based on whether they look like a contender (wants points now) or a rebuilding team (wants youth and picks). The odds are estimates, since real managers have their own favorite players.</p>
+    ${!ready ? `<div class="empty">Looking for trades across the league…</div>` : ideaCards ? `<div class="locks">${ideaCards}</div>` : `<div class="note info">No trades right now that help you and that the other manager would likely accept. Check back after waivers or injuries shake up rosters.</div>`}</section>
+  <section class="panel" id="analyzer"><div class="hd"><h2>Trade Analyzer</h2><span class="r">Numbers: lock value · <b>dynasty value</b></span></div><p class="muted small" style="margin:0 0 10px">Trade value turns dynasty value into what a player is worth in a deal. It grows faster than dynasty value at the top, so one star is worth more than two decent players who add up to the same number.</p><label class="small muted" for="partner">Trade partner</label><br><select class="sel" id="partner">${opts}</select></section>
   <div class="tradecols">
     <section class="panel"><div class="hd"><h3>You give</h3><span class="r">${esc(me.name)}</span></div>${pick(me, st.give, "give")}</section>
     <section class="panel"><div class="hd"><h3>You get</h3><span class="r">${esc(them.name)}</span></div>${pick(them, st.get, "get")}</section>
   </div>
-  <section class="panel"><div class="hd"><h3>Result</h3>${give.length || get.length ? `<button class="btn" id="clearTrade" type="button" style="margin-left:auto">Clear</button>` : ""}</div>${result}</section>
-  <div class="grid2">
-    <section class="panel"><div class="hd"><h3>Trade targets</h3><span class="r">Your weakest spot: ${weak === "G" ? "guards" : weak === "F" ? "forwards" : "centers"} (rank ${myRanks[weak]} of ${D.teams.length})</span></div>
-      ${ideas.length ? `<div class="tbl"><table><tbody>${ideas.slice(0, 8).map(x => `<tr><td>${plCell(x.id, x.t, null)}</td><td class="muted small">${esc(x.t.name)}</td><td class="n score">${f1(lockValue(x.id))}</td><td class="n">${dv(x.id)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No obvious targets right now.</div>`}</section>
-    <section class="panel"><div class="hd"><h3>Positional rank by team</h3><span class="r">1 = deepest</span></div><div class="tbl"><table class="heat"><thead><tr><th>Team</th><th style="text-align:center">G</th><th style="text-align:center">F</th><th style="text-align:center">C</th></tr></thead><tbody>${heat}</tbody></table></div></section>
-  </div>`;
+  <section class="panel"><div class="hd"><h3>Result</h3>${give.length || get.length ? `<button class="btn" id="clearTrade" type="button" style="margin-left:auto">Clear</button>` : ""}</div>${result}</section>`;
 }
 
 // ---------- dynasty tab ----------
@@ -514,7 +675,9 @@ function render() {
 }
 window.addEventListener("hashchange", render);
 document.addEventListener("click", e => {
-  const t = e.target.closest("[data-day],[data-pos],[data-sort],[data-k],[data-mark],[data-unmark],#clearTrade,#refresh"); if (!t) return;
+  const t = e.target.closest("[data-day],[data-pos],[data-sort],[data-k],[data-mark],[data-unmark],[data-idea],[data-approach],#clearTrade,#refresh"); if (!t) return;
+  if (t.dataset.approach) { setApproach(t.dataset.approach); render(); return; }
+  if (t.dataset.idea != null) { const x = tradeIdeas()[+t.dataset.idea]; st.partner = x.rid; st.give = new Set(x.give); st.get = new Set(x.get); render(); document.getElementById("analyzer")?.scrollIntoView({ behavior: "smooth" }); return; }
   if (t.id === "refresh") { load(true); return; }
   if (t.dataset.day) st.day = t.dataset.day;
   else if (t.dataset.pos) st.wPos = t.dataset.pos;
@@ -547,7 +710,7 @@ async function load(manual = false) {
   try {
     const r = await fetch("/api/data" + (manual ? "?t=" + Date.now() : ""), { cache: manual ? "no-store" : "default" });
     const body = await r.json(); if (!r.ok) throw new Error(body.error || "status " + r.status);
-    D = body; P = D.players; TEAMS = Object.fromEntries(D.teams.map(t => [t.rid, t])); DV = null;
+    D = body; P = D.players; TEAMS = Object.fromEntries(D.teams.map(t => [t.rid, t])); DV = null; MEMO = {};
     header(); render();
   } catch (e) {
     if (!D) document.getElementById("view").innerHTML = `<div class="panel empty">Couldn't load your league: ${esc(e.message)}. Tap Refresh to try again.</div>`;
