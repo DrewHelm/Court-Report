@@ -644,6 +644,154 @@ function viewTeam() {
   <p class="muted small">Counts = the score that currently counts for him this week in Sleeper (his locked game, or his latest one). ${total} players rostered in all.</p>`;
 }
 
+// ---------- season plan ----------
+// Weekly strength for the season sim: best 9 lock values. IR players are assumed back after two weeks.
+function strengthWithIR(rid) { return memo("sir" + rid, () => { const t = TEAMS[rid]; return typicalLineup(t.players.filter(id => P[id] && !(t.taxi || []).includes(id))); }); }
+function randn() { let u = 0, v = 0; while (!u) u = Math.random(); while (!v) v = Math.random(); return Math.sqrt(-2 * Math.log(u)) * Math.cos(2 * Math.PI * v); }
+// Monte Carlo of the rest of the regular season and the playoffs
+function seasonSim(N = 3000) {
+  return memo("sim", () => {
+    const ids = D.teams.map(t => t.rid); const n = ids.length; const nP = D.league.playoffTeams || 6;
+    const now = Object.fromEntries(ids.map(r => [r, baseLineup(r)])), full = Object.fromEntries(ids.map(r => [r, Math.max(baseLineup(r), strengthWithIR(r))]));
+    const cur = Object.fromEntries(ids.map(r => [r, teamProjection(r)]));
+    const mu = (r, w) => (w <= D.week + 1 ? now[r] : full[r]);
+    const out = Object.fromEntries(ids.map(r => [r, { wins: 0, playoff: 0, title: 0, bye: 0, finish: Array(n).fill(0) }]));
+    // Week-to-week noise (12%) plus season-level uncertainty per team (7%): injuries, trades, and this model being wrong
+    let M = {};
+    const play = (a, b) => { const sa = full[a] * M[a] * (1 + 0.12 * randn()), sb = full[b] * M[b] * (1 + 0.12 * randn()); return sa >= sb ? a : b; };
+    for (let k = 0; k < N; k++) {
+      M = Object.fromEntries(ids.map(r => [r, 1 + 0.07 * randn()]));
+      const W = {}, PF = {}; for (const t of D.teams) { W[t.rid] = t.w + 0.5 * (t.tie || 0); PF[t.rid] = t.pf; }
+      for (const f of D.fixtures) for (const [a, b] of f.pairs) {
+        let sa, sb;
+        if (f.w === D.week) { sa = cur[a].total + Math.sqrt(cur[a].varr) * randn(); sb = cur[b].total + Math.sqrt(cur[b].varr) * randn(); }
+        else { sa = mu(a, f.w) * M[a] * (1 + 0.12 * randn()); sb = mu(b, f.w) * M[b] * (1 + 0.12 * randn()); }
+        PF[a] += sa; PF[b] += sb; if (sa >= sb) W[a]++; else W[b]++;
+      }
+      const order = [...ids].sort((a, b) => W[b] - W[a] || PF[b] - PF[a]);
+      order.forEach((r, i) => { out[r].finish[i]++; out[r].wins += W[r]; if (i < nP) out[r].playoff++; if (i < 2) out[r].bye++; });
+      // 6-team bracket: 3v6 and 4v5, then the top two seeds play the winners
+      const s = order.slice(0, nP); let champ;
+      if (nP === 6) { const q1 = play(s[2], s[5]), q2 = play(s[3], s[4]); champ = play(play(s[0], q2), play(s[1], q1)); }
+      else { let field = s; while (field.length > 1) { const next = []; for (let i = 0; i < field.length / 2; i++) next.push(play(field[i], field[field.length - 1 - i])); field = next; } champ = field[0]; }
+      out[champ].title++;
+    }
+    for (const r of ids) { const o = out[r]; o.wins /= N; o.playoff /= N; o.title /= N; o.bye /= N; o.finish = o.finish.map(x => x / N); }
+    return out;
+  });
+}
+// Player development for the window view: young players grow, older ones fade
+function growth(age) { if (age == null) return 1; if (age <= 21) return 1.12; if (age <= 23) return 1.08; if (age <= 25) return 1.03; if (age <= 28) return 1; if (age <= 30) return 0.95; if (age <= 32) return 0.9; return 0.85; }
+function futureStrength(rid, years) {
+  return memo(`fut${rid}-${years}`, () => {
+    const t = TEAMS[rid]; const ids = t.players.filter(id => P[id]);
+    const val = id => { let v = lockValue(id), a = P[id].age; for (let y = 0; y < years; y++) { v *= growth(a); if (a != null) a++; } return v; };
+    return optimize(ids, val).total;
+  });
+}
+function rankOf(rid, f) { const v = f(rid); return 1 + D.teams.filter(t => f(t.rid) > v).length; }
+function ordinal(n) { const s = ["th", "st", "nd", "rd"], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); }
+function weekDate(w) { const d = new Date(D.weekDates[0] + "T12:00:00"); d.setDate(d.getDate() + 7 * (w - D.week)); return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }); }
+
+function viewPlan() {
+  const ready = "sim" in MEMO;
+  if (!ready) { setTimeout(() => { seasonSim(); if (currentView() === "plan") render(); }, 30); return `<section class="panel"><div class="hd"><h2>Season Plan</h2></div><div class="empty">Simulating the rest of the season 3,000 times…</div></section>`; }
+  const sim = seasonSim(); const me = TEAMS[D.me]; const my = sim[D.me]; const n = D.teams.length; const nP = D.league.playoffTeams || 6;
+  const nowRank = rankOf(D.me, baseLineup), dynRank = rankOf(D.me, teamDynasty), y1 = rankOf(D.me, r => futureStrength(r, 1)), y2 = rankOf(D.me, r => futureStrength(r, 2));
+  const coreAge = (() => { const a = me.players.filter(id => P[id]).sort((x, y) => dv(y) - dv(x)).slice(0, 10).map(id => P[id].age).filter(Boolean); return a.length ? sum(a) / a.length : null; })();
+  // Draft slot if the order is reverse standings (worst record picks 1st)
+  const pickDist = [...my.finish].reverse();
+  const expPick = sum(pickDist.map((p, i) => p * (i + 1)));
+  const slotValue = slot => { const frac = (n - slot) / (n - 1); return 40 + 30 * frac; }; // same scale as pick values
+  const bottom3 = sum(pickDist.slice(0, 3)), top3pick = sum(pickDist.slice(0, 3));
+  const tankGain = slotValue(2) - slotValue(Math.round(expPick));
+
+  // The call
+  let plan, tone, why;
+  const deadline = D.league.tradeDeadline;
+  if (my.title >= 0.15 || my.playoff >= 0.65) { plan = "Contend"; tone = "up"; why = `You make the playoffs in ${pct(my.playoff)} of simulations and win it all in ${pct(my.title)}. Spend future value (aging vets on rebuilding teams are cheap, and your later picks) to raise this season's ceiling.`; }
+  else if (my.playoff >= 0.35) {
+    if (dynRank <= 4 || y1 <= 3) { plan = "Push, but protect the core"; tone = ""; why = `You're a coin flip for the playoffs (${pct(my.playoff)}) and your long-term outlook is strong (${ordinal(dynRank)} in dynasty value). Make small upgrades for this season, but don't trade young players or 1sts for veterans.`; }
+    else { plan = "Decide by the deadline"; tone = ""; why = `You're on the bubble (${pct(my.playoff)} playoff odds). Give it until about week ${Math.max(D.week + 3, (deadline || 18) - 6)}: if you're out of the top ${nP} by then, sell veterans before the week ${deadline} deadline.`; }
+  } else if (dynRank <= 4 || y1 <= 3) { plan = "Retool for next year"; tone = "down"; why = `Only ${pct(my.playoff)} playoff odds this season, but your roster projects ${ordinal(y1)} next year. Sell veterans who won't be good by then for picks and young players, and keep the young core.`; }
+  else { plan = "Rebuild: aim for a top pick"; tone = "down"; why = `Only ${pct(my.playoff)} playoff odds, and your long-term value ranks ${ordinal(dynRank)}. ${expPick <= 3.5 ? `You're already on track for a top-3 rookie pick (${pct(top3pick)} of simulations), so lean into it.` : `A top-3 rookie pick is worth about ${f0(tankGain)} more dynasty value than where you're projected to pick (${ordinal(Math.round(expPick))}).`} Sell veterans to contenders for 1sts and young players, and keep your young core.`; }
+
+  // Who to sell, buy and build around
+  const contenders = D.teams.filter(t => t.rid !== D.me && sim[t.rid].playoff >= 0.5).map(t => t.rid);
+  const rebuilders = D.teams.filter(t => t.rid !== D.me && sim[t.rid].playoff < 0.3).map(t => t.rid);
+  const groupOf = id => (P[id].pos.includes("C") ? "C" : P[id].pos.some(x => x === "PG" || x === "SG") ? "G" : "F");
+  const weakFor = (rid, g) => { const s = groupStrength(rid); const r = 1 + D.teams.filter(t => groupStrength(t.rid)[g] > s[g]).length; return r >= 7; };
+  const sells = me.players.filter(id => P[id] && (P[id].age || 0) >= 29 && !OUT.has(P[id].inj)).sort((a, b) => lockValue(b) - lockValue(a)).slice(0, 4)
+    .map(id => ({ id, buyers: contenders.filter(r => weakFor(r, groupOf(id))).slice(0, 3) }));
+  const core = me.players.filter(id => P[id] && (P[id].age || 99) <= 24 && dv(id) >= 55).sort((a, b) => dv(b) - dv(a));
+  const buys = (() => { const out = []; const base = baseLineup(D.me);
+    for (const r of rebuilders) for (const id of active(TEAMS[r])) { if ((P[id].age || 0) < 28 || OUT.has(P[id].inj)) continue; const gain = typicalLineup(active(me).concat(id)) - base; if (gain >= 2) out.push({ id, r, gain }); }
+    return out.sort((a, b) => b.gain - a.gain).slice(0, 5); })();
+
+  // Schedule
+  const next = D.fixtures.filter(f => f.w > D.week).slice(0, 4).map(f => { const pr = f.pairs.find(p => p.includes(D.me)); const opp = pr ? pr.find(x => x !== D.me) : null; return { w: f.w, opp }; });
+  const sos = (() => { const opps = D.fixtures.filter(f => f.w >= D.week).map(f => { const pr = f.pairs.find(p => p.includes(D.me)); return pr ? pr.find(x => x !== D.me) : null; }).filter(Boolean);
+    const avgOpp = sum(opps.map(r => strengthWithIR(r))) / Math.max(1, opps.length); const all = D.teams.map(t => { const o = D.fixtures.filter(f => f.w >= D.week).map(f => { const pr = f.pairs.find(p => p.includes(t.rid)); return pr ? pr.find(x => x !== t.rid) : null; }).filter(Boolean); return sum(o.map(r => strengthWithIR(r))) / Math.max(1, o.length); });
+    return 1 + all.filter(x => x > avgOpp).length; })();
+
+  // Checklist
+  const checks = [];
+  const lockable = active(me).filter(id => lockCall(D.me, id, null).kind === "decide").length;
+  if (lockable) checks.push(`Make ${lockable} lock decision${lockable > 1 ? "s" : ""} on the <a href="#lock">Lock-In</a> tab.`);
+  const wm = waiverMoves(); const firstMove = (plan === "Contend" || plan.startsWith("Push") ? wm.nowList[0] || wm.futList[0] : wm.futList[0] || wm.taxiMoves[0]);
+  if (firstMove) checks.push(`Waivers: pick up ${esc(P[firstMove.f].n)}, drop ${esc(P[firstMove.d].n)} (<a href="#waivers">details</a>).`);
+  const irHealthy = (me.reserve || []).filter(id => P[id] && !OUT.has(P[id].inj) && P[id].inj !== "Doubtful");
+  if (irHealthy.length) checks.push(`Move ${irHealthy.map(id => esc(P[id].n)).join(", ")} off IR. Sleeper blocks moves until you do.`);
+  if (sells.length && !plan.startsWith("Contend") && !plan.startsWith("Push")) checks.push(`Shop ${esc(P[sells[0].id].n)} to ${sells[0].buyers.length ? sells[0].buyers.map(r => esc(TEAMS[r].name)).join(" or ") : "a contender"}.`);
+  if (buys.length && (plan === "Contend" || plan.startsWith("Push"))) checks.push(`Ask ${esc(TEAMS[buys[0].r].name)} about ${esc(P[buys[0].id].n)}: a rebuilding team with a veteran who'd add ${f1(buys[0].gain)} to your lineup each week.`);
+  checks.push(`Check <a href="#trade">Trades</a> with your approach set to ${plan === "Contend" ? "Win now" : plan.startsWith("Re") ? "Build for the future" : "Balanced"}.`);
+
+  const oddsRows = [...D.teams].sort((a, b) => sim[b.rid].playoff - sim[a.rid].playoff || sim[b.rid].title - sim[a.rid].title).map(t => { const o = sim[t.rid];
+    return `<tr${t.rid === D.me ? ' class="swapin"' : ""}><td><div class="pl"><span class="a">${esc(t.name)}</span><span class="b">${esc(t.user)} · ${t.w}-${t.l}</span></div></td><td class="n">${f1(o.wins)}</td><td class="n">${pct(o.playoff)}</td><td class="n hide-s">${pct(o.bye)}</td><td class="n score">${pct(o.title)}</td></tr>`; }).join("");
+  const pickBars = pickDist.map((p, i) => `<div class="daybar" style="grid-template-columns:44px 1fr 44px"><span class="muted">#${i + 1}</span><div class="half"><span class="fill" style="width:${Math.min(100, p * 250)}%"></span></div><span class="num small">${pct(p)}</span></div>`).join("");
+  const winRows = [["Now", nowRank], ["Next season", y1], ["In two seasons", y2]].map(([k, r]) => `<div><span class="k">${k}</span><span class="v ${r <= 3 ? "good" : ""}">${ordinal(r)}</span></div>`).join("");
+  const list = (arr, fn, empty) => arr.length ? `<div class="tbl"><table><tbody>${arr.map(fn).join("")}</tbody></table></div>` : `<div class="empty">${empty}</div>`;
+
+  return `
+  <section class="panel"><div class="hd"><h2>Season Plan</h2><span class="r">${esc(me.name)} · ${me.w}-${me.l} · week ${D.week} of ${(D.league.playoffStart || 22) - 1}</span></div>
+    <div class="verdict ${tone}" style="font-size:30px">${plan}</div>
+    <p style="margin:8px 0 0;max-width:70ch">${why}</p></section>
+  <div class="summary">
+    <div><span class="k">Projected wins</span><span class="v">${f1(my.wins)}</span></div>
+    <div><span class="k">Playoff odds</span><span class="v ${my.playoff >= 0.5 ? "good" : ""}">${pct(my.playoff)}</span></div>
+    <div><span class="k">Title odds</span><span class="v acc">${pct(my.title)}</span></div>
+    <div><span class="k">Dynasty rank</span><span class="v">${ordinal(dynRank)}</span></div>
+    <div><span class="k">Core age</span><span class="v">${coreAge ? f1(coreAge) : "—"}</span></div>
+  </div>
+  <section class="panel"><div class="hd"><h3>This week</h3></div><ul style="margin:0;padding-left:20px;display:grid;gap:6px">${checks.map(c => `<li>${c}</li>`).join("")}</ul></section>
+  <div class="grid2">
+    <section class="panel"><div class="hd"><h3>Your window</h3><span class="r">Roster strength rank, players aging as they do</span></div>
+      <div class="summary">${winRows}</div>
+      <p class="muted small" style="margin:10px 0 0">Projects your current roster forward: players 23 and under improve, players past 29 decline. ${y2 <= nowRank - 2 ? "Your roster gets better with time, so patience pays." : y2 >= nowRank + 2 ? "Your roster gets worse with time, so this season matters more than later ones." : Math.min(nowRank, y1, y2) >= 9 ? "Your roster stays near the bottom even as your young players grow, so you need to add talent, not just wait." : Math.max(nowRank, y1, y2) <= 4 ? "Your roster stays near the top for the next two years." : "Your roster holds roughly steady over the next two years."}</p></section>
+    <section class="panel"><div class="hd"><h3>Should you tank?</h3><span class="r">Assumes reverse standings set the rookie draft</span></div>
+      <div class="daybars">${pickBars}</div>
+      <p class="muted small" style="margin:10px 0 0">Your average projected pick is ${ordinal(Math.round(expPick))}; you land a top-3 pick in ${pct(top3pick)} of simulations. ${expPick <= 3.5 ? "You're already in range for a top pick." : `Moving up to the 2nd pick is worth about ${f0(Math.max(0, tankGain))} dynasty value.`} ${plan.startsWith("Rebuild") ? "That's worth chasing: selling veterans lowers your record and adds picks at the same time." : my.playoff >= 0.5 ? "With your playoff odds, chasing a high pick isn't worth it." : "It's a real option if your playoff odds keep slipping."} If your league uses a lottery or another order, tell me and I'll change this.</p></section>
+  </div>
+  <div class="grid2">
+    <section class="panel"><div class="hd"><h3>${plan === "Contend" || plan.startsWith("Push") ? "Veterans you could sell later" : "Sell before the deadline"}</h3><span class="r">Week ${deadline} (~${weekDate(deadline)})</span></div>
+      ${list(sells, x => `<tr><td>${plCell(x.id, me, null)}</td><td class="muted small">${x.buyers.length ? "Fits " + x.buyers.map(r => esc(TEAMS[r].name)).join(", ") : "Any contender"}</td><td class="n">${dv(x.id)}</td></tr>`, "No veterans worth selling.")}
+      <p class="muted small" style="margin:10px 0 0">Players 29 and older lose dynasty value every year. Buyers listed are teams likely to make the playoffs that are thin at his position.</p></section>
+    <section class="panel"><div class="hd"><h3>${plan === "Contend" || plan.startsWith("Push") ? "Veterans to target" : "Build around"}</h3></div>
+      ${plan === "Contend" || plan.startsWith("Push")
+        ? list(buys, x => `<tr><td>${plCell(x.id, TEAMS[x.r], null)}</td><td class="muted small">${esc(TEAMS[x.r].name)}</td><td class="n up">+${f1(x.gain)}/wk</td></tr>`, "No cheap veterans who'd improve your lineup.")
+        : list(core, id => `<tr><td>${plCell(id, me, null)}</td><td class="n">${P[id].age}</td><td class="n">${dv(id)}</td></tr>`, "No young core players yet: target players 24 and under in trades.")}
+    </section>
+  </div>
+  <div class="grid2">
+    <section class="panel"><div class="hd"><h3>League odds</h3><span class="r">${f0(3000).replace(/\B(?=(\d{3})+(?!\d))/g, ",")} simulated seasons</span></div>
+      <div class="tbl"><table><thead><tr><th>Team</th><th class="n">Wins</th><th class="n">Playoffs</th><th class="n hide-s">Bye</th><th class="n">Title</th></tr></thead><tbody>${oddsRows}</tbody></table></div>
+      <p class="muted small" style="margin:10px 0 0">Each team's weekly strength is its best 9 lock values; IR players are assumed back after two weeks. Every simulation also shuffles team strength a little, since injuries and trades will change rosters. Top ${nP} make the playoffs, top 2 get byes.</p></section>
+    <section class="panel"><div class="hd"><h3>Schedule</h3><span class="r">Remaining strength of schedule: ${ordinal(sos)} hardest</span></div>
+      ${list(next, x => `<tr><td class="muted">Wk ${x.w}</td><td>${x.opp ? esc(TEAMS[x.opp].name) : "Bye"}</td><td class="n small muted">${x.opp ? `${ordinal(rankOf(x.opp, strengthWithIR))} strongest` : ""}</td></tr>`, "No games left.")}
+      <p class="muted small" style="margin:10px 0 0">Trade deadline: week ${deadline} (~${weekDate(deadline)}). Playoffs start week ${D.league.playoffStart} (~${weekDate(D.league.playoffStart)}). Dates are estimates if Sleeper merges weeks around the All-Star break.</p></section>
+  </div>`;
+}
+
 // ---------- league ----------
 function viewLeague() {
   const allPlay = {}; D.teams.forEach(t => (allPlay[t.rid] = { w: 0, l: 0 }));
@@ -665,7 +813,7 @@ function viewLeague() {
 }
 
 // ---------- shell ----------
-const VIEWS = { lock: viewLock, lineup: viewLineup, team: viewTeam, matchup: viewMatchup, waivers: viewWaivers, trade: viewTrade, dynasty: viewDynasty, league: viewLeague };
+const VIEWS = { plan: viewPlan, lock: viewLock, lineup: viewLineup, team: viewTeam, matchup: viewMatchup, waivers: viewWaivers, trade: viewTrade, dynasty: viewDynasty, league: viewLeague };
 function currentView() { const h = (location.hash || "").slice(1); return VIEWS[h] ? h : "lock"; }
 function render() {
   if (!D) return; const v = currentView();
