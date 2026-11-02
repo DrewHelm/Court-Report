@@ -139,3 +139,6 @@ details summary{cursor:pointer;color:var(--mute);font-size:13px}
 .lock .foot{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--mute)}
 .lock .foot .btn{padding:4px 10px;font-size:12px;margin-left:auto}
 .t-lock{background:var(--good-bg);color:var(--good)}
+.move.opt{border-style:dashed;background:transparent}
+.move .gain.flat{color:var(--mute)}
+.pl .why-line{white-space:normal;color:var(--dim);max-width:46ch}

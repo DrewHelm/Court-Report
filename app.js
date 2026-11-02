@@ -208,6 +208,7 @@ function viewLock() {
 // ---------- Lineup tab ----------
 // In Lock-In, starting a player only matters on days you might want to lock his game.
 // Value of starting him today = how much having today's game as a lock option adds over just waiting.
+const CLOSE = 1.0; // edges within a point of each other are a coin flip
 function startValue(id, d) {
   const p = P[id]; const g = p.wk[d]; if (!g || g.state !== "pre") return null;
   const fut = futureGames(p); const idx = fut.findIndex(f => f.d === d); if (idx < 0) return null;
@@ -215,6 +216,26 @@ function startValue(id, d) {
   if (W == null) return today.p * today.m; // last game of the week: it has to be in a slot to count
   return today.p * eMax(today.m, today.s, W) + (1 - today.p) * W - W + 0.01 * today.m;
 }
+// Plain-language reasons behind a player's edge tonight
+function startReasons(id, d) {
+  const p = P[id]; const g = p.wk[d];
+  if (!g) return ["No game"]; if (g.state !== "pre") return ["Already played"]; if (OUT.has(p.inj)) return ["Out"];
+  const fut = futureGames(p); const idx = fut.findIndex(f => f.d === d); if (idx < 0) return [];
+  const today = fut[idx], after = fut.slice(idx + 1); const W = continuation(after); const r = [];
+  if (!after.length) r.push("Last game this week, so he has to start for it to count");
+  if (PLAY_PROB[p.inj] != null) r.push(`${p.inj === "GTD" ? "Game-time decision" : p.inj}, about ${pct(today.p)} to play`);
+  if (after.length) {
+    if (W > today.m * 1.12) r.push(`Better games ahead: ${after.length} more worth ~${f1(W)}`);
+    else if (after.length === 1) r.push("Only 1 game left after tonight");
+  }
+  const swing = today.s / Math.max(today.m, 1);
+  if (swing > 0.38) r.push("Big game-to-game swings, so a spike tonight is worth catching");
+  else if (swing < 0.25 && after.length) r.push("Steady scorer, so tonight rarely beats waiting");
+  if (g.b2b) r.push("Second night of a back-to-back");
+  if (!r.length) r.push("Tonight looks about as good as his later games");
+  return r;
+}
+function withReason(cell, reasons) { return reasons.length ? cell.replace(/<\/div>$/, `<span class="b why-line">${esc(reasons.join(" · "))}</span></div>`) : cell; }
 function viewLineup() {
   const me = TEAMS[D.me]; const cur = D.current.find(c => c.rid === D.me) || { starters: [] }; const ids = active(me);
   const days = D.weekDates.filter(d => d >= D.today); if (!st.day || !days.includes(st.day)) st.day = days[0] || D.weekDates[D.weekDates.length - 1];
@@ -222,27 +243,45 @@ function viewLineup() {
   const slots = D.league.slots; const lockedIdx = new Set(); const lockedIds = new Set();
   slots.forEach((s, i) => { const id = cur.starters[i]; if (id && lockState(D.me, id).locked) { lockedIdx.add(i); lockedIds.add(id); } });
   const openSlots = slots.filter((_, i) => !lockedIdx.has(i));
-  const o = optimize(ids.filter(id => !lockedIds.has(id)), id => startValue(id, d), openSlots);
+  const edge = id => startValue(id, d);
+  const o = optimize(ids.filter(id => !lockedIds.has(id)), edge, openSlots);
   const rec = new Set(o.lineup.map(x => x.id).filter(Boolean)); const now = new Set(cur.starters);
+  const benchIds = ids.filter(id => !rec.has(id) && !lockedIds.has(id));
   let oi = 0;
   const rows = slots.map((s, i) => {
-    if (lockedIdx.has(i)) { const id = cur.starters[i]; const ls = lockState(D.me, id); return `<tr class="dim"><td class="slot">${esc(s)}</td><td>${plCell(id, me, null, `<span class="tag t-lock">LOCKED ${f1(ls.score)}</span>`)}</td><td class="n">—</td><td class="n hide-s">—</td><td class="n">—</td></tr>`; }
+    if (lockedIdx.has(i)) { const id = cur.starters[i]; const ls = lockState(D.me, id); return `<tr class="dim"><td class="slot">${esc(s)}</td><td>${plCell(id, me, null, `<span class="tag t-lock">LOCKED ${f1(ls.score)}</span>`)}</td><td class="n">—</td><td class="n">—</td><td class="n hide-s">—</td></tr>`; }
     const x = o.lineup[oi++]; const p = P[x.id]; const isNew = isToday && x.id && !now.has(x.id);
-    const fut = p ? futureGames(p) : []; const last = p && fut.length && fut[fut.length - 1].d === d;
-    return `<tr class="${isNew ? "swapin" : ""}"><td class="slot">${esc(s)}</td><td>${plCell(x.id, me, d, (isNew ? `<span class="tag t-in">IN</span>` : "") + (last ? `<span class="tag t-b2b">LAST GAME</span>` : ""))}</td><td class="n score">${p ? f1(gameMean(p, d)) : "—"}</td><td class="n">${p ? f1(startValue(x.id, d)) : "—"}</td><td class="n hide-s">${p ? fut.length : "—"}</td></tr>`;
+    const fut = p ? futureGames(p) : [];
+    const tags = isNew ? `<span class="tag t-in">IN</span>` : "";
+    const reasons = p ? startReasons(x.id, d) : [];
+    return `<tr class="${isNew ? "swapin" : ""}"><td class="slot">${esc(s)}</td><td>${p ? withReason(plCell(x.id, me, d, tags), reasons) : plCell(null)}</td><td class="n score">${p ? f1(gameMean(p, d)) : "—"}</td><td class="n">${p ? f1(x.s) : "—"}</td><td class="n hide-s">${p ? fut.length : "—"}</td></tr>`;
   }).join("");
-  const benchIds = ids.filter(id => !rec.has(id) && !lockedIds.has(id));
-  const brow = benchIds.map(id => { const p = P[id]; const why = !p.wk[d] ? "No game" : p.wk[d].state !== "pre" ? "Already played" : OUT.has(p.inj) ? "Out" : "Lower lock value"; const was = isToday && now.has(id);
-    return `<tr class="${!p.wk[d] || OUT.has(p.inj) ? "dim" : ""}"><td class="slot">${was ? "OUT" : "BN"}</td><td>${plCell(id, me, d)}</td><td class="n">${p.wk[d] ? f1(gameMean(p, d)) : "—"}</td><td class="muted small">${why}</td></tr>`; }).join("");
-  const moves = isToday ? [...rec].filter(id => !now.has(id)) : [];
+  const brow = benchIds.map(id => ({ id, e: edge(id) })).sort((a, b) => (b.e ?? -1) - (a.e ?? -1)).map(({ id, e }) => {
+    const p = P[id]; const was = isToday && now.has(id); const reasons = startReasons(id, d);
+    return `<tr class="${e == null ? "dim" : ""}"><td class="slot">${was ? "OUT" : "BN"}</td><td>${withReason(plCell(id, me, d), reasons)}</td><td class="n">${p.wk[d] ? f1(gameMean(p, d)) : "—"}</td><td class="n">${e == null ? "—" : f1(e)}</td></tr>`;
+  }).join("");
+  // Today's swaps: pair each player coming in with a current starter going out
+  let moves = "";
+  if (isToday) {
+    const ins = [...rec].filter(id => !now.has(id)).sort((a, b) => edge(b) - edge(a));
+    const outs = cur.starters.filter((id, i) => id && !lockedIdx.has(i) && !rec.has(id)).sort((a, b) => (edge(a) ?? -1) - (edge(b) ?? -1));
+    const pairs = ins.map((id, i) => ({ id, out: outs[i], gap: edge(id) - (outs[i] ? edge(outs[i]) ?? 0 : 0) }));
+    const real = pairs.filter(x => x.gap >= CLOSE), flips = pairs.filter(x => x.gap < CLOSE);
+    const curEdge = sum(cur.starters.filter((id, i) => id && !lockedIdx.has(i)).map(id => edge(id) ?? 0)), gainAll = o.total - curEdge;
+    const mv = (x, opt) => `<div class="move ${opt ? "opt" : ""}"><span>${opt ? "Either:" : "<b>Start</b>"} ${esc(P[x.id].n)}</span><span class="arrow">${opt ? "or" : "over"}</span><span class="muted">${x.out ? esc(P[x.out].n) : "an empty slot"}</span><span class="gain ${opt ? "flat" : ""}">+${f1(x.gap)}</span></div>`;
+    const summary = `<div class="note ${gainAll >= 2 ? "" : "info"}">${gainAll < 0.5 ? "Your current lineup is already the best one for today." : `Making every change below gains about <b>${f1(gainAll)}</b> point${Math.abs(gainAll - 1) < 0.05 ? "" : "s"} of expected value this week${gainAll < 2 ? ", so tonight's lineup is low stakes" : ""}.`}</div>`;
+    if (!pairs.length) moves = summary;
+    else moves = summary + real.map(x => mv(x, false)).join("") +
+      (flips.length ? `<details${real.length ? "" : " open"}><summary>${flips.length} close call${flips.length > 1 ? "s" : ""}, under a point either way</summary><div class="moves" style="margin-top:8px">${flips.map(x => mv(x, true)).join("")}</div></details>` : "");
+  }
   const chips = days.map(x => `<button class="chip ${x === d ? "on" : ""}" data-day="${x}" type="button">${x === D.today ? "Today" : dayLabel(x)}<span class="cnt">${ids.filter(id => P[id].wk[x] && !OUT.has(P[id].inj)).length}</span></button>`).join("");
   return `
   <section class="panel"><div class="hd"><h2>Daily Lineup</h2><span class="r">${openSlots.length} open slots · ${lockedIdx.size} locked</span></div><div class="chips">${chips}</div></section>
-  <div class="note info">In Lock-In, a player's game only counts if he's in your lineup that day and you lock it, or if it's his last game of the week. So each day, fill your open slots with the players whose game you'd most likely want to lock, and always start a player on his last game of the week. That can mean starting a role player over a star early in the week: the star has plenty of games left to lock, while one big night from the role player is worth catching.</div>
-  ${isToday && moves.length ? `<section class="panel"><div class="hd"><h3>Moves to make today</h3></div><div class="moves">${moves.map(id => `<div class="move"><span><b>Start</b> ${esc(P[id].n)}</span><span class="muted small">${esc(P[id].wk[d] ? (P[id].wk[d].home ? "vs " : "@ ") + P[id].wk[d].opp : "")}</span></div>`).join("")}</div></section>` : ""}
-  <section class="panel"><div class="hd"><h3>Recommended lineup · ${dayLabel(d)}</h3><span class="r">Exp = expected points tonight · Edge = points gained by having tonight as a lock option</span></div>
+  <div class="note info">In Lock-In, a game only counts if the player is in your lineup that day and you lock it, or if it's his last game of the week. So each day, start the players whose game tonight you'd be most likely to lock. Edge is how many points you gain by having tonight as a lock option; anything within a point is a coin flip.</div>
+  ${isToday ? `<section class="panel"><div class="hd"><h3>Moves to make today</h3></div><div class="moves">${moves}</div></section>` : ""}
+  <section class="panel"><div class="hd"><h3>Recommended lineup · ${dayLabel(d)}</h3><span class="r">Exp = expected points tonight · Edge = gain from starting him</span></div>
     <div class="tbl"><table><thead><tr><th>Slot</th><th>Player</th><th class="n">Exp</th><th class="n">Edge</th><th class="n hide-s">Gms left</th></tr></thead><tbody>${rows}</tbody></table></div></section>
-  <section class="panel"><div class="hd"><h3>Bench</h3></div><div class="tbl"><table><tbody>${brow || `<tr><td class="empty">Nobody on the bench.</td></tr>`}</tbody></table></div></section>`;
+  <section class="panel"><div class="hd"><h3>Bench</h3></div><div class="tbl"><table><thead><tr><th></th><th>Player</th><th class="n">Exp</th><th class="n">Edge</th></tr></thead><tbody>${brow || `<tr><td class="empty">Nobody on the bench.</td></tr>`}</tbody></table></div></section>`;
 }
 
 // ---------- Matchup tab ----------
