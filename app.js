@@ -160,7 +160,7 @@ function plCell(id, team, d, extra = "") {
   return `<div class="pl"><span class="a">${esc(p.n)}${statusTags(p, d)}${extra}</span><span class="b">${esc(p.t || "FA")} · ${esc(p.pos.join("/"))}${opp ? " · " + opp : ""}${n ? ` · <span class="nick">“${esc(n)}”</span>` : ""}</span></div>`;
 }
 function weekStrip(p) {
-  return D.weekDates.filter(d => p.wk[d]).map(d => { const g = p.wk[d]; const v = g.state === "post" ? f1(g.fp) : g.state === "in" ? "live" : "·"; return `${dayLabel(d).split(" ")[0]} ${v}`; }).join("  ");
+  return D.weekDates.filter(d => p.wk[d]).map(d => { const g = p.wk[d]; const v = g.state === "post" ? f1(g.fp) : g.state === "in" ? "live" : "–"; return `${dayLabel(d).split(" ")[0]} ${v}`; }).join("  ");
 }
 
 // ---------- Lock-In tab ----------
@@ -309,7 +309,7 @@ function viewMatchup() {
   </div>`;
 }
 
-// ---------- season values used by waivers, trades, keepers ----------
+// ---------- season values used by waivers, trades, dynasty ----------
 // In Lock-In a player's weekly worth is closer to his best of ~3.5 games than his average
 function lockValue(id) { const p = P[id]; return (p.val || 0) + 0.85 * (p.sd || 0.33 * (p.val || 0)); }
 function weekEV(id) { const p = P[id]; return continuation(futureGames(p)) ?? 0; }
@@ -319,30 +319,47 @@ function viewWaivers() {
   const me = TEAMS[D.me]; const mine = active(me);
   const drop = mine.map(id => ({ id, v: lockValue(id) })).sort((a, b) => a.v - b.v)[0];
   const pos = st.wPos; let list = D.fa.filter(id => P[id] && (pos === "ALL" || P[id].pos.includes(pos)));
-  const key = { score: waiverScore, lv: lockValue, val: id => P[id].val || 0, wk: weekEV, l14: id => P[id].l14 ?? -1, trend: id => (P[id].l14 ?? P[id].val ?? 0) - (P[id].pre || P[id].val || 0) }[st.wSort] || waiverScore;
+  const key = { score: waiverScore, dyn: dv, lv: lockValue, val: id => P[id].val || 0, wk: weekEV, l14: id => P[id].l14 ?? -1, trend: id => (P[id].l14 ?? P[id].val ?? 0) - (P[id].pre || P[id].val || 0) }[st.wSort] || waiverScore;
   list = list.map(id => ({ id, k: key(id) })).sort((a, b) => b.k - a.k).slice(0, 40);
   const th = (k, l, cls = "") => `<th class="n sort ${st.wSort === k ? "act" : ""} ${cls}" data-sort="${k}">${l}</th>`;
   const rows = list.map((x, i) => { const p = P[x.id]; const tr = (p.l14 ?? p.val ?? 0) - (p.pre || p.val || 0); const up = lockValue(x.id) - (drop ? drop.v : 0);
-    return `<tr><td class="n muted">${i + 1}</td><td>${plCell(x.id, null, null)}</td><td class="n score">${f1(waiverScore(x.id))}</td><td class="n">${f1(lockValue(x.id))}</td><td class="n hide-s">${f1(p.val)}</td><td class="n">${f1(weekEV(x.id))}</td><td class="n">${futureGames(p).length}</td><td class="n hide-s ${tr > 1 ? "up" : tr < -1 ? "down" : ""}">${tr > 0 ? "▲" : tr < 0 ? "▼" : ""}${f1(Math.abs(tr))}</td><td class="n ${up > 0 ? "up" : "down"}">${up > 0 ? "+" : ""}${f1(up)}</td></tr>`; }).join("");
+    return `<tr><td class="n muted">${i + 1}</td><td>${plCell(x.id, null, null)}</td><td class="n score">${f1(waiverScore(x.id))}</td><td class="n">${f1(lockValue(x.id))}</td><td class="n hide-s">${f1(p.val)}</td><td class="n">${f1(weekEV(x.id))}</td><td class="n">${futureGames(p).length}</td><td class="n hide-s ${tr > 1 ? "up" : tr < -1 ? "down" : ""}">${tr > 0 ? "▲" : tr < 0 ? "▼" : ""}${f1(Math.abs(tr))}</td><td class="n">${dv(x.id)}</td><td class="n ${up > 0 ? "up" : "down"}">${up > 0 ? "+" : ""}${f1(up)}</td></tr>`; }).join("");
   const chips = ["ALL", "PG", "SG", "SF", "PF", "C"].map(x => `<button class="chip ${x === pos ? "on" : ""}" data-pos="${x}" type="button">${x === "ALL" ? "All" : x}</button>`).join("");
   return `
   <section class="panel"><div class="hd"><h2>Waiver Wire</h2><span class="r">${D.fa.length} free agents · FAAB $${D.league.faab ?? "—"}</span></div><div class="chips">${chips}</div></section>
   ${drop ? `<div class="note info">Your weakest active player is <b>${esc(P[drop.id].n)}</b> (lock value ${f1(drop.v)}). The last column shows how much each free agent beats him by.</div>` : ""}
-  <section class="panel"><div class="tbl"><table><thead><tr><th class="n">#</th><th>Player</th>${th("score", "Score")}${th("lv", "Lock val")}${th("val", "Avg val", "hide-s")}${th("wk", "This wk")}<th class="n">Gms</th>${th("trend", "Trend", "hide-s")}<th class="n">vs drop</th></tr></thead><tbody>${rows || `<tr><td colspan="9" class="empty">No free agents at this position.</td></tr>`}</tbody></table></div>
-  <p class="muted small" style="margin:10px 0 0">Lock val = what he's worth in a typical Lock-In week: his average plus credit for big games, since you only count his best one. This wk = what he'd likely count for this week if you added him now. Score mixes lock value (50%), this week (30%) and last 14 days (20%).</p></section>`;
+  <section class="panel"><div class="tbl"><table><thead><tr><th class="n">#</th><th>Player</th>${th("score", "Score")}${th("lv", "Lock val")}${th("val", "Avg val", "hide-s")}${th("wk", "This wk")}<th class="n">Gms</th>${th("trend", "Trend", "hide-s")}${th("dyn", "Dyn")}<th class="n">vs drop</th></tr></thead><tbody>${rows || `<tr><td colspan="10" class="empty">No free agents at this position.</td></tr>`}</tbody></table></div>
+  <p class="muted small" style="margin:10px 0 0">Lock val = what he's worth in a typical Lock-In week: his average plus credit for big games, since you only count his best one. This wk = what he'd likely count for this week if you added him now. Score mixes lock value (50%), this week (30%) and last 14 days (20%). Dyn = dynasty value (0–100, same scale as rostered players); sort by it to find long-term stashes.</p></section>`;
 }
 
-// ---------- trades ----------
-function ageMult(a) { if (a == null) return 1; if (a <= 22) return 1.15; if (a <= 24) return 1.08; if (a <= 28) return 1; if (a <= 30) return 0.94; if (a <= 32) return 0.86; return 0.76; }
-let KV = null;
-function keeperValues() {
-  if (KV) return KV; const ids = Object.keys(P).filter(id => P[id].own);
-  const raw = ids.map(id => ({ id, r: lockValue(id) * ageMult(P[id].age) * (OUT.has(P[id].inj) ? 0.9 : 1), a: P[id].adp ?? 999 }));
+// ---------- dynasty values (league is dynasty: settings.type 2) ----------
+// Age curve for long-term value: young players gain, players past 28 fade fast
+function ageMult(a) { if (a == null) return 1; const t = { 19: 1.32, 20: 1.3, 21: 1.26, 22: 1.2, 23: 1.14, 24: 1.08, 25: 1.03, 26: 1, 27: 0.98, 28: 0.93, 29: 0.86, 30: 0.78, 31: 0.7, 32: 0.62 }; return a <= 19 ? 1.32 : t[a] ?? 0.52; }
+let DV = null;
+// 0–100 rank among every rostered player: 55% age-adjusted Lock-In value, 45% dynasty draft position
+function dynastyValues() {
+  if (DV) return DV; const ids = Object.keys(P).filter(id => P[id].own);
+  const raw = ids.map(id => ({ id, r: lockValue(id) * ageMult(P[id].age) * (OUT.has(P[id].inj) ? 0.92 : 1), a: P[id].adp ?? 400 }));
   const byR = [...raw].sort((a, b) => a.r - b.r), byA = [...raw].sort((a, b) => b.a - a.a); const pr = {}, pa = {};
   byR.forEach((x, i) => (pr[x.id] = i / (raw.length - 1))); byA.forEach((x, i) => (pa[x.id] = i / (raw.length - 1)));
-  KV = {}; raw.forEach(x => (KV[x.id] = Math.round(100 * (0.65 * pr[x.id] + 0.35 * pa[x.id])))); return KV;
+  DV = {}; raw.forEach(x => (DV[x.id] = Math.round(100 * (0.55 * pr[x.id] + 0.45 * pa[x.id])))); return DV;
 }
-function kv(id) { const k = keeperValues(); if (k[id] != null) return k[id]; return Math.round(Math.min(99, lockValue(id) * ageMult(P[id].age) * 2.2)); }
+function dv(id) { const k = dynastyValues(); if (k[id] != null) return k[id]; return Math.round(Math.min(95, lockValue(id) * ageMult(P[id].age) * 2.1)); }
+
+// Rookie picks on the same 0–100 scale. Next year's 1st depends on how bad the original team looks now.
+function teamStrengthRank(rid) { const s = Object.fromEntries(D.teams.map(t => [t.rid, typicalLineup(active(t))])); return 1 + D.teams.filter(t => s[t.rid] > s[rid]).length; }
+function pickValue(pk) {
+  const yrs = pk.season - Number(D.season); const n = D.teams.length;
+  const slot = yrs === 1 ? (teamStrengthRank(pk.orig) - 1) / (n - 1) : 0.5; // 0 = best team (late pick), 1 = worst (early pick)
+  const base = pk.round === 1 ? 40 + 30 * slot : pk.round === 2 ? 15 + 10 * slot : 5 + 5 * slot;
+  return Math.round(base * Math.pow(0.9, yrs - 1));
+}
+function pickLabel(pk) { const t = TEAMS[pk.orig]; return `${pk.season} ${["", "1st", "2nd", "3rd"][pk.round] || pk.round + "th"}${pk.orig !== pk.owner ? ` (from ${t ? t.name : "?"})` : ""}`; }
+const pickKey = pk => `pk:${pk.season}:${pk.round}:${pk.orig}`;
+function picksOf(rid) { return (D.picks || []).filter(pk => pk.owner === rid); }
+function assetValue(key) { if (key.startsWith("pk:")) { const pk = D.picks.find(x => pickKey(x) === key); return pk ? pickValue(pk) : 0; } return dv(key); }
+
+// ---------- trades ----------
 // Rest of season: one counted game per week, so weeks left × lock value
 function rosValue(id) { const p = P[id]; return lockValue(id) * ((p.rem || 0) / 3.5) * (OUT.has(p.inj) ? 0.5 : 1); }
 function typicalLineup(ids) { return optimize(ids, id => (OUT.has(P[id].inj) ? null : lockValue(id))).total; }
@@ -351,26 +368,37 @@ function groupStrength(rid) { const ids = active(TEAMS[rid]).filter(id => !OUT.h
 function viewTrade() {
   const others = D.teams.filter(t => t.rid !== D.me); if (!st.partner) st.partner = others[0].rid;
   const me = TEAMS[D.me], them = TEAMS[st.partner];
-  const pick = (team, set, key) => [...new Set(active(team).concat(team.reserve || []))].filter(id => P[id]).sort((a, b) => lockValue(b) - lockValue(a)).map(id => `<label class="pick"><input type="checkbox" data-${key}="${id}" ${set.has(id) ? "checked" : ""}>${plCell(id, team, null)}<span class="num small">${f1(lockValue(id))}</span></label>`).join("");
+  const pick = (team, set, key) => {
+    const ids = [...new Set(team.players)].filter(id => P[id]).sort((a, b) => dv(b) - dv(a));
+    const players = ids.map(id => `<label class="pick"><input type="checkbox" data-${key}="${id}" ${set.has(id) ? "checked" : ""}>${plCell(id, team, null, (team.taxi || []).includes(id) ? `<span class="tag t-b2b">TAXI</span>` : (team.reserve || []).includes(id) ? `<span class="tag t-b2b">IR</span>` : "")}<span class="num small" title="Lock value · dynasty value">${f1(lockValue(id))} · <b>${dv(id)}</b></span></label>`).join("");
+    const pks = picksOf(team.rid).map(pk => `<label class="pick"><input type="checkbox" data-${key}="${pickKey(pk)}" ${set.has(pickKey(pk)) ? "checked" : ""}><div class="pl"><span class="a">${esc(pickLabel(pk))}</span><span class="b">Rookie draft pick</span></div><span class="num small"><b>${pickValue(pk)}</b></span></label>`).join("");
+    return players + (pks ? `<details style="margin-top:8px"><summary>Draft picks (${picksOf(team.rid).length})</summary>${pks}</details>` : "");
+  };
   const give = [...st.give], get = [...st.get];
-  let result = `<div class="empty">Pick players on both sides to compare.</div>`;
+  const plOnly = a => a.filter(k => !k.startsWith("pk:"));
+  let result = `<div class="empty">Pick players or draft picks on both sides to compare.</div>`;
   if (give.length || get.length) {
-    const ros = a => sum(a.map(rosValue)), kk = a => sum(a.map(kv));
+    const ros = a => sum(plOnly(a).map(rosValue)), dyn = a => sum(a.map(assetValue)), lv = a => sum(plOnly(a).map(lockValue));
     const myIds = active(me), thIds = active(them);
-    const myAfter = myIds.filter(id => !st.give.has(id)).concat(get), thAfter = thIds.filter(id => !st.get.has(id)).concat(give);
+    const myAfter = myIds.filter(id => !st.give.has(id)).concat(plOnly(get)), thAfter = thIds.filter(id => !st.get.has(id)).concat(plOnly(give));
     const myB = typicalLineup(myIds), myA = typicalLineup(myAfter), thB = typicalLineup(thIds), thA = typicalLineup(thAfter);
-    const dRos = ros(get) - ros(give), dK = kk(get) - kk(give), dL = myA - myB;
-    const score = dL / 6 + dRos / 120 + dK / 60;
-    const verdict = score > 0.6 ? ["Strong win", "up"] : score > 0.15 ? ["Lean accept", "up"] : score > -0.15 ? ["Even swap", ""] : score > -0.6 ? ["Lean decline", "down"] : ["Hard pass", "down"];
+    const dRos = ros(get) - ros(give), dDyn = dyn(get) - dyn(give), dL = myA - myB;
+    // Dynasty league: long-term value carries the most weight
+    // Squash each side so one huge number can't drown out the other
+    const nowScore = Math.tanh((dL / 6 + dRos / 150) / 2), dynScore = Math.tanh(dDyn / 40);
+    const score = 0.4 * nowScore + 0.6 * dynScore;
+    const verdict = score > 0.5 ? ["Strong win", "up"] : score > 0.12 ? ["Lean accept", "up"] : score > -0.12 ? ["Even swap", ""] : score > -0.5 ? ["Lean decline", "down"] : ["Hard pass", "down"];
+    const lean = nowScore > 0.1 && dynScore < -0.1 ? "Helps you now, costs you long term." : nowScore < -0.1 && dynScore > 0.1 ? "Costs you this season, builds for the future." : "";
     const row = (k, a, b, d) => `<tr><td>${k}</td><td class="n">${a}</td><td class="n">${b}</td><td class="n ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "+" : ""}${f1(d)}</td></tr>`;
-    result = `<div class="bar-lg" style="justify-content:space-between;flex-wrap:wrap;margin-bottom:10px"><span class="verdict ${verdict[1]}">${verdict[0]}</span><span class="muted small">for ${esc(me.name)}</span></div>
+    result = `<div class="bar-lg" style="justify-content:space-between;flex-wrap:wrap;margin-bottom:6px"><span class="verdict ${verdict[1]}">${verdict[0]}</span><span class="muted small">for ${esc(me.name)}</span></div>
+      ${lean ? `<div class="note info" style="margin-bottom:10px">${lean}</div>` : ""}
       <div class="tbl"><table><thead><tr><th></th><th class="n">You give</th><th class="n">You get</th><th class="n">Net</th></tr></thead><tbody>
-      ${row("Lock value per week", f1(sum(give.map(lockValue))), f1(sum(get.map(lockValue))), sum(get.map(lockValue)) - sum(give.map(lockValue)))}
-      ${row("Rest of season", f0(ros(give)), f0(ros(get)), dRos)}
-      ${row("Keeper value (0–100 each)", f0(kk(give)), f0(kk(get)), dK)}
+      ${row("Dynasty value (players + picks)", f0(dyn(give)), f0(dyn(get)), dDyn)}
+      ${row("Lock value per week", f1(lv(give)), f1(lv(get)), lv(get) - lv(give))}
+      ${row("Rest of this season", f0(ros(give)), f0(ros(get)), dRos)}
       </tbody></table></div>
       <div class="summary" style="margin-top:12px"><div><span class="k">Your weekly total</span><span class="v">${f1(myB)} → ${f1(myA)}</span><span class="small ${dL >= 0 ? "up" : "down"}">${dL >= 0 ? "+" : ""}${f1(dL)}</span></div><div><span class="k">Their weekly total</span><span class="v">${f1(thB)} → ${f1(thA)}</span><span class="small ${thA - thB >= 0 ? "up" : "down"}">${thA - thB >= 0 ? "+" : ""}${f1(thA - thB)}</span></div></div>
-      <p class="muted small" style="margin:10px 0 0">Weekly total = each team's best 9 lock values, which is roughly what a lineup counts in a normal Lock-In week. A 2-for-1 that clogs your bench shows up here.</p>`;
+      <p class="muted small" style="margin:10px 0 0">The verdict weighs dynasty value 60% and this season 40%. Dynasty value is 0–100 per player or pick. Weekly total = each team's best 9 lock values, so a 2-for-1 that clogs your bench shows up here. Pick values are estimates: next year's 1sts are worth more from teams that look weak now.</p>`;
   }
   const strength = {}; D.teams.forEach(t => (strength[t.rid] = groupStrength(t.rid)));
   const rank = (g, rid) => 1 + D.teams.filter(t => strength[t.rid][g] > strength[rid][g]).length;
@@ -387,7 +415,7 @@ function viewTrade() {
   const heat = D.teams.map(t => `<tr${t.rid === D.me ? ' class="swapin"' : ""}><td><div class="pl"><span class="a">${esc(t.name)}</span><span class="b">${esc(t.user)}</span></div></td>${Object.keys(GROUPS).map(g => { const r = rank(g, t.rid); const bg = r <= 4 ? "var(--good-bg)" : r >= 9 ? "var(--bad-bg)" : "transparent"; return `<td class="h" style="background:${bg}">${r}</td>`; }).join("")}</tr>`).join("");
   const opts = others.map(t => `<option value="${t.rid}" ${t.rid === st.partner ? "selected" : ""}>${esc(t.name)} (${esc(t.user)})</option>`).join("");
   return `
-  <section class="panel"><div class="hd"><h2>Trade Analyzer</h2></div><label class="small muted" for="partner">Trade partner</label><br><select class="sel" id="partner">${opts}</select></section>
+  <section class="panel"><div class="hd"><h2>Trade Analyzer</h2><span class="r">Numbers: lock value · <b>dynasty value</b></span></div><label class="small muted" for="partner">Trade partner</label><br><select class="sel" id="partner">${opts}</select></section>
   <div class="tradecols">
     <section class="panel"><div class="hd"><h3>You give</h3><span class="r">${esc(me.name)}</span></div>${pick(me, st.give, "give")}</section>
     <section class="panel"><div class="hd"><h3>You get</h3><span class="r">${esc(them.name)}</span></div>${pick(them, st.get, "get")}</section>
@@ -395,23 +423,64 @@ function viewTrade() {
   <section class="panel"><div class="hd"><h3>Result</h3>${give.length || get.length ? `<button class="btn" id="clearTrade" type="button" style="margin-left:auto">Clear</button>` : ""}</div>${result}</section>
   <div class="grid2">
     <section class="panel"><div class="hd"><h3>Trade targets</h3><span class="r">Your weakest spot: ${weak === "G" ? "guards" : weak === "F" ? "forwards" : "centers"} (rank ${myRanks[weak]} of ${D.teams.length})</span></div>
-      ${ideas.length ? `<div class="tbl"><table><tbody>${ideas.slice(0, 8).map(x => `<tr><td>${plCell(x.id, x.t, null)}</td><td class="muted small">${esc(x.t.name)}</td><td class="n score">${f1(lockValue(x.id))}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No obvious targets right now.</div>`}</section>
+      ${ideas.length ? `<div class="tbl"><table><tbody>${ideas.slice(0, 8).map(x => `<tr><td>${plCell(x.id, x.t, null)}</td><td class="muted small">${esc(x.t.name)}</td><td class="n score">${f1(lockValue(x.id))}</td><td class="n">${dv(x.id)}</td></tr>`).join("")}</tbody></table></div>` : `<div class="empty">No obvious targets right now.</div>`}</section>
     <section class="panel"><div class="hd"><h3>Positional rank by team</h3><span class="r">1 = deepest</span></div><div class="tbl"><table class="heat"><thead><tr><th>Team</th><th style="text-align:center">G</th><th style="text-align:center">F</th><th style="text-align:center">C</th></tr></thead><tbody>${heat}</tbody></table></div></section>
   </div>`;
 }
 
-// ---------- keepers ----------
-function viewKeepers() {
-  keeperValues(); const N = D.league.keepers || 6; const scope = st.kScope;
-  let ids = scope === "mine" ? TEAMS[D.me].players.filter(id => P[id]) : Object.keys(KV);
-  ids = ids.sort((a, b) => kv(b) - kv(a)); if (scope !== "mine") ids = ids.slice(0, 60);
-  const rows = ids.map((id, i) => { const p = P[id]; const team = TEAMS[p.own]; const keep = scope === "mine" && i < N;
-    return `<tr class="${scope === "mine" && i >= N ? "dim" : ""}"><td class="n muted">${i + 1}</td><td>${plCell(id, team, null, keep ? `<span class="tag t-keep">KEEP</span>` : "")}</td>${scope !== "mine" ? `<td class="muted small hide-s">${esc(team?.name || "")}</td>` : ""}<td><div class="bar-lg"><span class="meter"><i style="width:${kv(id)}%"></i></span><span class="num">${kv(id)}</span></div></td><td class="n">${p.age ?? "—"}</td><td class="n">${f1(lockValue(id))}</td><td class="n hide-s">${p.adp ? f0(p.adp) : "—"}</td></tr>`; }).join("");
+// ---------- dynasty tab ----------
+function teamDynasty(rid) { const t = TEAMS[rid]; const top = t.players.filter(id => P[id]).map(dv).sort((a, b) => b - a).slice(0, 12); return sum(top) + sum(picksOf(rid).map(pickValue)); }
+function viewDynasty() {
+  dynastyValues(); const scope = st.kScope;
+  let ids = scope === "mine" ? TEAMS[D.me].players.filter(id => P[id]) : Object.keys(DV);
+  ids = ids.sort((a, b) => dv(b) - dv(a)); if (scope !== "mine") ids = ids.slice(0, 75);
+  const rows = ids.map((id, i) => { const p = P[id]; const team = TEAMS[p.own]; const t = TEAMS[p.own];
+    const where = t && (t.taxi || []).includes(id) ? `<span class="tag t-b2b">TAXI</span>` : t && (t.reserve || []).includes(id) ? `<span class="tag t-b2b">IR</span>` : "";
+    return `<tr${p.own === D.me && scope !== "mine" ? ' class="swapin"' : ""}><td class="n muted">${i + 1}</td><td>${plCell(id, team, null, where)}</td>${scope !== "mine" ? `<td class="muted small hide-s">${esc(team?.name || "")}</td>` : ""}<td><div class="bar-lg"><span class="meter"><i style="width:${dv(id)}%"></i></span><span class="num">${dv(id)}</span></div></td><td class="n">${p.age ?? "—"}</td><td class="n hide-s">${p.exp ?? "—"}</td><td class="n">${f1(lockValue(id))}</td><td class="n hide-s">${p.adp ? f0(p.adp) : "—"}</td></tr>`; }).join("");
+  const tdyn = D.teams.map(t => ({ t, v: teamDynasty(t.rid), age: (() => { const a = t.players.filter(id => P[id]).sort((x, y) => dv(y) - dv(x)).slice(0, 10).map(id => P[id].age).filter(Boolean); return a.length ? sum(a) / a.length : null; })() })).sort((a, b) => b.v - a.v);
+  const maxT = Math.max(1, ...tdyn.map(x => x.v));
+  const trows = tdyn.map((x, i) => `<tr${x.t.rid === D.me ? ' class="swapin"' : ""}><td class="n muted">${i + 1}</td><td><div class="pl"><span class="a">${esc(x.t.name)}</span><span class="b">${esc(x.t.user)}</span></div></td><td><div class="bar-lg"><span class="meter"><i style="width:${x.v / maxT * 100}%"></i></span><span class="num">${f0(x.v)}</span></div></td><td class="n">${x.age ? f1(x.age) : "—"}</td></tr>`).join("");
+  const myPicks = picksOf(D.me).map(pk => `<tr><td>${esc(pickLabel(pk))}</td><td class="n">${pickValue(pk)}</td></tr>`).join("");
   return `
-  <section class="panel"><div class="hd"><h2>Keeper Rankings</h2><span class="r">Your league keeps ${N}</span></div>
+  <section class="panel"><div class="hd"><h2>Dynasty Rankings</h2></div>
     <div class="chips"><button class="chip ${scope === "mine" ? "on" : ""}" data-k="mine" type="button">My team</button><button class="chip ${scope === "all" ? "on" : ""}" data-k="all" type="button">Whole league</button></div></section>
-  <section class="panel"><div class="tbl"><table><thead><tr><th class="n">#</th><th>Player</th>${scope !== "mine" ? `<th class="hide-s">Team</th>` : ""}<th>Keeper value</th><th class="n">Age</th><th class="n">Lock val</th><th class="n hide-s">Dyn ADP</th></tr></thead><tbody>${rows}</tbody></table></div>
-  <p class="muted small" style="margin:10px 0 0">Keeper value ranks every rostered player 0–100: 65% Lock-In value adjusted for age (younger players get a boost, players past 30 a discount), 35% dynasty draft position.</p></section>`;
+  <section class="panel"><div class="tbl"><table><thead><tr><th class="n">#</th><th>Player</th>${scope !== "mine" ? `<th class="hide-s">Team</th>` : ""}<th>Dynasty value</th><th class="n">Age</th><th class="n hide-s">Yrs</th><th class="n">Lock val</th><th class="n hide-s">Dyn ADP</th></tr></thead><tbody>${rows}</tbody></table></div>
+  <p class="muted small" style="margin:10px 0 0">Dynasty value ranks every rostered player 0–100: 55% Lock-In value adjusted for age (young players get a big boost, players past 28 fade fast), 45% dynasty draft position.</p></section>
+  <div class="grid2">
+    <section class="panel"><div class="hd"><h3>Long-term team strength</h3><span class="r">Top 12 players + picks</span></div><div class="tbl"><table><thead><tr><th class="n">#</th><th>Team</th><th>Value</th><th class="n">Core age</th></tr></thead><tbody>${trows}</tbody></table></div><p class="muted small" style="margin:10px 0 0">Core age = average age of each team's 10 most valuable players.</p></section>
+    <section class="panel"><div class="hd"><h3>Your draft picks</h3><span class="r">Next 3 rookie drafts</span></div>${myPicks ? `<div class="tbl"><table><tbody>${myPicks}</tbody></table></div>` : `<div class="empty">You've traded all your picks.</div>`}<p class="muted small" style="margin:10px 0 0">Pick values are estimates on the same 0–100 scale. A 1st next year is worth more the weaker the original team looks right now.</p></section>
+  </div>`;
+}
+
+// ---------- my team (full roster) ----------
+function viewTeam() {
+  const me = TEAMS[D.me]; const cur = D.current.find(c => c.rid === D.me) || { starters: [], pp: {} };
+  const ir = new Set(me.reserve || []), taxi = new Set(me.taxi || []);
+  const activeIds = active(me); const startersNow = cur.starters.filter(id => id && P[id]);
+  const bench = activeIds.filter(id => !cur.starters.includes(id)).sort((a, b) => lockValue(b) - lockValue(a));
+  const head = `<thead><tr><th></th><th>Player</th><th class="n">Lock val</th><th class="n">Dyn</th><th class="n">Age</th><th class="n hide-s">This week</th><th class="n">Counts</th></tr></thead>`;
+  const row = (slot, id, extra = "", note = "") => { const p = P[id]; const ls = lockState(D.me, id);
+    const tags = (ls.locked ? `<span class="tag t-lock">LOCKED</span>` : "") + extra;
+    return `<tr><td class="slot">${esc(slot)}</td><td>${withReason(plCell(id, me, null, tags), note ? [note] : [])}</td><td class="n score">${f1(lockValue(id))}</td><td class="n">${dv(id)}</td><td class="n">${p.age ?? "—"}</td><td class="n hide-s muted small">${esc(weekStrip(p) || "No games")}</td><td class="n">${cur.pp[id] != null ? f1(cur.pp[id]) : "—"}</td></tr>`; };
+  const startRows = D.league.slots.map((s, i) => { const id = cur.starters[i]; return id && P[id] ? row(s, id) : `<tr><td class="slot">${esc(s)}</td><td colspan="6" class="muted">Empty</td></tr>`; }).join("");
+  const weakestBench = Math.min(...bench.map(lockValue), Infinity);
+  const openIR = (D.league.reserveSlots || 0) - ir.size;
+  const benchRows = bench.map(id => row("BN", id, "", OUT.has(P[id].inj) && openIR > 0 ? "Out: you could move him to IR to open a roster spot" : "")).join("");
+  const irRows = [...ir].filter(id => P[id]).map(id => { const p = P[id]; const healthy = !OUT.has(p.inj) && p.inj !== "Doubtful";
+    return row("IR", id, healthy ? `<span class="tag t-q">ACTIVATE</span>` : "", healthy ? "No longer injured: Sleeper won't let you make moves until he's off IR" : (p.injNote || p.injPart || "")); }).join("");
+  const taxiRows = [...taxi].filter(id => P[id]).map(id => { const better = !OUT.has(P[id].inj) && lockValue(id) > weakestBench + 3;
+    return row("TX", id, better ? `<span class="tag t-in">PROMOTE?</span>` : "", better ? `Beats your weakest bench player (${f1(weakestBench)}), but promoting him is permanent` : `${P[id].exp === 0 ? "Rookie" : "Year " + (P[id].exp + 1)} · stashing is free`); }).join("");
+  const total = me.players.length;
+  return `
+  <section class="panel"><div class="hd"><h2>My Team</h2><span class="r">${esc(me.name)} · ${me.w}-${me.l}</span></div>
+    <div class="summary"><div><span class="k">Starters</span><span class="v">${startersNow.length}/${D.league.slots.length}</span></div><div><span class="k">Bench</span><span class="v">${bench.length}</span></div><div><span class="k">IR</span><span class="v">${ir.size}/${D.league.reserveSlots}</span></div><div><span class="k">Taxi</span><span class="v">${taxi.size}/${D.league.taxiSlots}</span></div><div><span class="k">Week ${D.week} score</span><span class="v acc">${f1(cur.pts)}</span></div></div></section>
+  <section class="panel"><div class="hd"><h3>Starting lineup</h3><span class="r">As set in Sleeper right now</span></div><div class="tbl"><table>${head}<tbody>${startRows}</tbody></table></div></section>
+  <section class="panel"><div class="hd"><h3>Bench</h3><span class="r">${bench.length} players</span></div><div class="tbl"><table>${head}<tbody>${benchRows || `<tr><td colspan="7" class="empty">Nobody on the bench.</td></tr>`}</tbody></table></div></section>
+  <div class="grid2">
+    <section class="panel"><div class="hd"><h3>Injured reserve</h3><span class="r">${ir.size} of ${D.league.reserveSlots} slots</span></div><div class="tbl"><table><tbody>${irRows || `<tr><td class="empty">IR is empty.</td></tr>`}</tbody></table></div></section>
+    <section class="panel"><div class="hd"><h3>Taxi squad</h3><span class="r">${taxi.size} of ${D.league.taxiSlots} · rookies only</span></div><div class="tbl"><table><tbody>${taxiRows || `<tr><td class="empty">Taxi squad is empty.</td></tr>`}</tbody></table></div></section>
+  </div>
+  <p class="muted small">Counts = the score that currently counts for him this week in Sleeper (his locked game, or his latest one). ${total} players rostered in all.</p>`;
 }
 
 // ---------- league ----------
@@ -421,20 +490,21 @@ function viewLeague() {
   const maxPf = Math.max(1, ...D.teams.map(t => t.pf)); const depths = Object.fromEntries(D.teams.map(t => [t.rid, typicalLineup(active(t))])); const maxDepth = Math.max(1, ...Object.values(depths));
   const power = D.teams.map(t => { const ap = allPlay[t.rid]; const p = ap.w + ap.l ? ap.w / (ap.w + ap.l) : 0.5; return { t, score: 0.45 * p + 0.25 * (t.pf / maxPf) + 0.3 * depths[t.rid] / maxDepth }; }).sort((a, b) => b.score - a.score);
   const stand = [...D.teams].sort((a, b) => b.w - a.w || b.pf - a.pf);
+  const dynOrder = [...D.teams].sort((a, b) => teamDynasty(b.rid) - teamDynasty(a.rid)); const dynRank = Object.fromEntries(dynOrder.map((t, i) => [t.rid, i + 1]));
   const divName = k => D.league.divs["division_" + k] || "";
   const srows = stand.map((t, i) => `<tr${t.rid === D.me ? ' class="swapin"' : ""}><td class="n muted">${i + 1}</td><td><div class="pl"><span class="a">${esc(t.name)}</span><span class="b">${esc(t.user)}${t.div ? " · " + esc(divName(t.div)) : ""}</span></div></td><td class="n">${t.w}-${t.l}${t.tie ? "-" + t.tie : ""}</td><td class="n">${f1(t.pf)}</td><td class="n hide-s">${f1(t.pa)}</td><td class="n muted hide-s">${esc(t.streak || "")}</td></tr>`).join("");
-  const prows = power.map((x, i) => `<tr${x.t.rid === D.me ? ' class="swapin"' : ""}><td class="n muted">${i + 1}</td><td><div class="pl"><span class="a">${esc(x.t.name)}</span><span class="b">${esc(x.t.user)}</span></div></td><td class="n">${allPlay[x.t.rid].w}-${allPlay[x.t.rid].l}</td><td class="n">${f1(depths[x.t.rid])}</td></tr>`).join("");
-  const rosters = D.teams.map(t => `<details class="panel"><summary><b>${esc(t.name)}</b> · ${esc(t.user)} · ${t.w}-${t.l}</summary><div class="tbl" style="margin-top:8px"><table><tbody>${t.players.filter(id => P[id]).sort((a, b) => lockValue(b) - lockValue(a)).map(id => `<tr><td>${plCell(id, t, null, (t.taxi || []).includes(id) ? `<span class="tag t-b2b">TAXI</span>` : (t.reserve || []).includes(id) ? `<span class="tag t-b2b">IR</span>` : "")}</td><td class="n">${f1(lockValue(id))}</td></tr>`).join("")}</tbody></table></div></details>`).join("");
+  const prows = power.map((x, i) => `<tr${x.t.rid === D.me ? ' class="swapin"' : ""}><td class="n muted">${i + 1}</td><td><div class="pl"><span class="a">${esc(x.t.name)}</span><span class="b">${esc(x.t.user)}</span></div></td><td class="n">${allPlay[x.t.rid].w}-${allPlay[x.t.rid].l}</td><td class="n">${f1(depths[x.t.rid])}</td><td class="n hide-s">${dynRank[x.t.rid]}</td></tr>`).join("");
+  const rosters = D.teams.map(t => `<details class="panel"><summary><b>${esc(t.name)}</b> · ${esc(t.user)} · ${t.w}-${t.l}</summary><div class="tbl" style="margin-top:8px"><table><tbody>${t.players.filter(id => P[id]).sort((a, b) => lockValue(b) - lockValue(a)).map(id => `<tr><td>${plCell(id, t, null, (t.taxi || []).includes(id) ? `<span class="tag t-b2b">TAXI</span>` : (t.reserve || []).includes(id) ? `<span class="tag t-b2b">IR</span>` : "")}</td><td class="n">${f1(lockValue(id))}</td><td class="n">${dv(id)}</td></tr>`).join("")}</tbody></table></div></details>`).join("");
   return `
   <div class="grid2">
     <section class="panel"><div class="hd"><h2>Standings</h2><span class="r">${esc(D.league.name)} · Week ${D.week}</span></div><div class="tbl"><table><thead><tr><th class="n">#</th><th>Team</th><th class="n">W-L</th><th class="n">PF</th><th class="n hide-s">PA</th><th class="n hide-s">Strk</th></tr></thead><tbody>${srows}</tbody></table></div></section>
-    <section class="panel"><div class="hd"><h2>Power Rankings</h2></div><div class="tbl"><table><thead><tr><th class="n">#</th><th>Team</th><th class="n">All-play</th><th class="n">Wk value</th></tr></thead><tbody>${prows}</tbody></table></div><p class="muted small" style="margin:10px 0 0">All-play is your record if you'd played every team every finished week. Rank mixes all-play (45%), points for (25%) and roster strength (30%).</p></section>
+    <section class="panel"><div class="hd"><h2>Power Rankings</h2></div><div class="tbl"><table><thead><tr><th class="n">#</th><th>Team</th><th class="n">All-play</th><th class="n">Wk value</th><th class="n hide-s">Dyn rank</th></tr></thead><tbody>${prows}</tbody></table></div><p class="muted small" style="margin:10px 0 0">All-play is your record if you'd played every team every finished week. Rank mixes all-play (45%), points for (25%) and roster strength (30%). Dyn rank = long-term strength from the Dynasty tab.</p></section>
   </div>
   <section style="display:grid;gap:8px"><h3>Rosters</h3>${rosters}</section>`;
 }
 
 // ---------- shell ----------
-const VIEWS = { lock: viewLock, lineup: viewLineup, matchup: viewMatchup, waivers: viewWaivers, trade: viewTrade, keepers: viewKeepers, league: viewLeague };
+const VIEWS = { lock: viewLock, lineup: viewLineup, team: viewTeam, matchup: viewMatchup, waivers: viewWaivers, trade: viewTrade, dynasty: viewDynasty, league: viewLeague };
 function currentView() { const h = (location.hash || "").slice(1); return VIEWS[h] ? h : "lock"; }
 function render() {
   if (!D) return; const v = currentView();
@@ -477,7 +547,7 @@ async function load(manual = false) {
   try {
     const r = await fetch("/api/data" + (manual ? "?t=" + Date.now() : ""), { cache: manual ? "no-store" : "default" });
     const body = await r.json(); if (!r.ok) throw new Error(body.error || "status " + r.status);
-    D = body; P = D.players; TEAMS = Object.fromEntries(D.teams.map(t => [t.rid, t])); KV = null;
+    D = body; P = D.players; TEAMS = Object.fromEntries(D.teams.map(t => [t.rid, t])); DV = null;
     header(); render();
   } catch (e) {
     if (!D) document.getElementById("view").innerHTML = `<div class="panel empty">Couldn't load your league: ${esc(e.message)}. Tap Refresh to try again.</div>`;

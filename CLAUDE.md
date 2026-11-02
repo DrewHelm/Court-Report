@@ -1,6 +1,6 @@
 # Court Report
 
-Fantasy basketball command center for Andrew's Sleeper league (BFBA, league id `1408273089707417600`, 12 teams, keeper league with 6 keepers and a 3-man taxi squad). Built for one user (Andrew), used on phone and laptop. Think "FantasyPros, but for this one league."
+Fantasy basketball command center for Andrew's Sleeper league (BFBA, league id `1408273089707417600`, 12 teams). It's a **dynasty** league (Sleeper `settings.type` 2): rosters carry over every year, rookie picks are tradable three drafts out, 2 IR slots, a 3-man taxi squad for rookies only. Ignore the leftover `max_keepers` setting; it isn't a keeper league. Built for one user (Andrew), used on phone and laptop. Think "FantasyPros, but for this one league."
 
 ## The league format matters: Sleeper NBA Lock-In
 - Weekly head-to-head points. Weeks run Monday to Sunday.
@@ -13,7 +13,7 @@ Fantasy basketball command center for Andrew's Sleeper league (BFBA, league id `
 
 ## How it's built
 - No framework and no build step. Static files at the root plus Vercel serverless functions in `api/`.
-- `index.html`, `styles.css`, `app.js`: the whole front end. `app.js` fetches `/api/data` and renders one tab at a time (hash routes: `#lock`, `#lineup`, `#matchup`, `#waivers`, `#trade`, `#keepers`, `#league`).
+- `index.html`, `styles.css`, `app.js`: the whole front end. `app.js` fetches `/api/data` and renders one tab at a time (hash routes: `#lock`, `#lineup`, `#team`, `#matchup`, `#waivers`, `#trade`, `#dynasty`, `#league`).
 - `api/data.js` → `lib/build.js`: pulls Sleeper + ESPN and returns one JSON payload. Vercel's CDN caches it for 60 seconds.
 - `lib/config.js`: league id and Andrew's Sleeper user id (`998451229829328896`). Env vars `SLEEPER_LEAGUE_ID` / `SLEEPER_USER_ID` override.
 - Design: dark "arena scoreboard" look, dense stat tables. Colors and fonts are tokens at the top of `styles.css`; reuse them instead of adding new literal colors.
@@ -31,7 +31,11 @@ Fantasy basketball command center for Andrew's Sleeper league (BFBA, league id `
 - **Lock detection** (`lockState`): Sleeper's public API has no lock flag. In Lock-In, `players_points` in the matchup is the game that currently counts. If it matches an earlier game rather than the latest, the player is locked. Locks on the latest game can't be told apart, so the user can tap "I locked him" (saved in localStorage).
 - **Daily lineup** (`startValue`): fills open slots with players whose game today is worth the most as a lock option, plus anyone playing his last game of the week.
 - **Lineup optimizer**: Hungarian algorithm over slot eligibility (G = PG/SG, F = SF/PF, UTIL = anyone).
-- **Lock value** (`lockValue`): avg + 0.85 × sd, roughly the best of ~3.5 games. Used for waivers, trades, keepers, power rankings.
+- **Lock value** (`lockValue`): avg + 0.85 × sd, roughly the best of ~3.5 games. Used for waivers, trades, power rankings.
+- **Dynasty value** (`dv`, 0–100): percentile among all rostered players, 55% age-adjusted lock value (steep age curve, `ageMult`) and 45% Sleeper dynasty ADP. Used in the Dynasty tab, trades, waivers, My Team.
+- **Draft picks** (`pickValue`): on the same 0–100 scale. Next year's picks scale with how weak the original team's roster looks now; later years are flat and discounted 10% a year. Pick ownership comes from `/league/{id}/traded_picks` (`lib/build.js` → `futurePicks`).
+- **Trade verdict**: 60% dynasty value change, 40% this-season change (weekly lineup total and rest-of-season points), each squashed with tanh so neither side dominates.
+- **My Team** (`viewTeam`): starters as set in Sleeper, bench, IR (flags players healthy enough that Sleeper will force a move), taxi (flags rookies clearly better than your weakest bench player).
 
 ## Working on it
 - Run locally: `npx vercel dev` (first time: `npx vercel link`). Then open http://localhost:3000.
