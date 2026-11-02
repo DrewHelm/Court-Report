@@ -1,0 +1,12 @@
+{
+  "name": "court-report",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Fantasy basketball command center for a Sleeper Lock-In league",
+  "type": "module",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "dev": "vercel dev",
+    "check": "node scripts/smoke.js"
+  }
+}

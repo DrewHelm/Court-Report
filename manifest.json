@@ -1,0 +1,9 @@
+{
+  "name": "Court Report",
+  "short_name": "Court Report",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0d1218",
+  "theme_color": "#0d1218",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

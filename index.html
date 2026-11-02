@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0d1218">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Court Report">
+<link rel="manifest" href="/manifest.json">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon.svg">
+<title>Court Report</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Saira+Condensed:wght@600;700;800&family=Public+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="bar">
+      <div class="brand">Court<b>Report</b></div>
+      <div class="team"><span class="nm" id="teamName">Loading league…</span><span class="sub" id="teamSub"></span></div>
+      <div class="spacer"></div>
+      <div class="fresh"><div id="fresh">—</div></div>
+      <button class="btn" id="refresh" type="button">Refresh</button>
+    </div>
+    <nav class="tabs" id="tabs">
+      <a href="#lock" data-v="lock">Lock-In</a>
+      <a href="#lineup" data-v="lineup">Lineup</a>
+      <a href="#matchup" data-v="matchup">Matchup</a>
+      <a href="#waivers" data-v="waivers">Waivers</a>
+      <a href="#trade" data-v="trade">Trades</a>
+      <a href="#keepers" data-v="keepers">Keepers</a>
+      <a href="#league" data-v="league">League</a>
+    </nav>
+  </header>
+  <main id="view"><div class="loading">Loading your league…</div></main>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
